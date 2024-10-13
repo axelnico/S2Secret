@@ -1,1 +1,1 @@
-# s2secret-client
+# S2Secret client
