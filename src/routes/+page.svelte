@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { preventDefault } from 'svelte/legacy';
+
   import { invoke } from "@tauri-apps/api/core";
   import { goto } from "$app/navigation";
 
-  let email = "";
-  let masterPassword = "";
+  let email = $state("");
+  let masterPassword = $state("");
   let greetMsg = "";
 
   async function greet() {
@@ -19,7 +21,7 @@
       <h2 class="text-2xl font-bold text-center mb-6">Login</h2>
       
       <!-- Form -->
-      <form class="space-y-4" on:submit|preventDefault={greet}>
+      <form class="space-y-4" onsubmit={preventDefault(greet)}>
         
         <!-- Email Input -->
         <div class="form-control">

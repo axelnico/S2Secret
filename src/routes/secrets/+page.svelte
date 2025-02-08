@@ -10,10 +10,10 @@
     }
 </script>
 
-<button class="btn btn-error" on:click={logout}><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-lock" viewBox="0 0 16 16">
+<button class="btn btn-error" onclick={logout}><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-lock" viewBox="0 0 16 16">
     <path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2m3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2M5 8h6a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1"/>
   </svg>Lock</button>
-<button class="btn btn-square btn-outline btn-primary" on:click={showModal}>
+<button class="btn btn-square btn-outline btn-primary" onclick={showModal}>
     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-plus-lg" viewBox="0 0 16 16">
         <path fill-rule="evenodd" d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2"/>
       </svg>
@@ -97,7 +97,7 @@
         <!-- if there is a button in form, it will close the modal -->
         <button class="btn">Cancel</button>
       </form>
-      <button class="btn btn-primary" on:click={logout}>Add secret</button>
+      <button class="btn btn-primary" onclick={logout}>Add secret</button>
     </div>
   </div>
 </dialog>
