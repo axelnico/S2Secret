@@ -11,7 +11,7 @@
   async function greet() {
     // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
     // greetMsg = await invoke("greet", { email });
-    goto("/secrets", { replaceState: true });
+    goto("/authenticated/secrets", { replaceState: true });
   }
 </script>
 
