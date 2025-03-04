@@ -6,13 +6,14 @@
 
   let email = $state("");
   let masterPassword = $state("");
-  let greetMsg = "";
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
-    // greetMsg = await invoke("greet", { email });
-    goto("/authenticated/secrets", { replaceState: true });
-  }
+  async function login() {
+      const login_response = await invoke("login", { email, masterPassword });
+      const is_authenticated = await invoke<boolean>("is_authenticated");
+      if (is_authenticated) {
+        goto("/secrets", { replaceState: true });
+      }
+    }
 </script>
 
 <div class="container mx-auto">
@@ -21,7 +22,7 @@
       <h2 class="text-2xl font-bold text-center mb-6">Login</h2>
       
       <!-- Form -->
-      <form class="space-y-4" onsubmit={preventDefault(greet)}>
+      <form class="space-y-4" onsubmit={login}>
         
         <!-- Email Input -->
         <div class="form-control">
@@ -68,7 +69,7 @@
   
       <!-- Extra Links -->
       <div class="text-center mt-4 text-sm">
-        <p>Don't have an account? <a href="#" class="text-primary hover:underline">Sign up</a></p>
+        <p>Don't have an account? <a href="/sign-up" class="text-primary hover:underline">Sign up</a></p>
       </div>
     </div>
   </div>

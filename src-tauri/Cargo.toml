@@ -1,8 +1,8 @@
 [package]
 name = "s2secret"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Secure password manager based on zero knowledge password authentication and secret sharing schemes"
+authors = ["Nicolas Axel Bukovits"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -22,4 +22,9 @@ tauri = { version = "2.2.5", features = [] }
 tauri-plugin-shell = "2.2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
+opaque-ke = { version = "3.0.0", features = ["argon2", "serde"] }
+rand = "0.8.5"
+argon2 = "0.5.3"
+tauri-plugin-http = { version = "2", features= ["json"] }
+uuid = { version = "1.10.0", features = ["v4", "serde"] }
+secrecy = "0.10.3"

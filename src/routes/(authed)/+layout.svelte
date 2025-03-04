@@ -1,12 +1,14 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
+    import { invoke } from "@tauri-apps/api/core";
   interface Props {
     children?: import('svelte').Snippet;
   }
 
   let { children }: Props = $props();
 
-  function logout() {
+  async function logout() {
+      await invoke("logout");
       goto("/", { replaceState: true });
     }
   </script>
