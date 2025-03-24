@@ -28,3 +28,6 @@ argon2 = "0.5.3"
 tauri-plugin-http = { version = "2", features= ["json"] }
 uuid = { version = "1.10.0", features = ["v4", "serde"] }
 secrecy = "0.10.3"
+tokio = { version = "1.39.3", features = ["full"] }
+reqwest-middleware = { version = "0.4.1" }
+async-trait = "0.1"

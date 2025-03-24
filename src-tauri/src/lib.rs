@@ -1,11 +1,14 @@
 use secrecy::{zeroize::Zeroize, ExposeSecret, ExposeSecretMut, SecretBox};
 use tauri::State;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 use tauri_plugin_http::reqwest;
 use opaque_ke::{CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientRegistration, ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse};
 use rand::rngs::OsRng;
 use argon2::Argon2;
 use tauri::{Builder, Manager};
+use reqwest_middleware::{Middleware, Next, ClientBuilder, Result as MiddlewareResult};
+use reqwest::{Request, Response, Client};
+use tauri::http::Extensions;
 
 struct DefaultCipherSuite;
 
@@ -16,6 +19,28 @@ impl CipherSuite for DefaultCipherSuite {
     type Ksf = Argon2<'static>;
 }
 
+struct SessionHeaderMiddleware {
+    /// Shared state holding the current session id, if any.
+    session_id: Option<uuid::Uuid>,
+}
+
+#[async_trait::async_trait]
+impl Middleware for SessionHeaderMiddleware {
+    async fn handle(
+        &self,
+        mut req: Request,
+        extensions: &mut Extensions,
+        next: Next<'_>,
+    ) -> MiddlewareResult<Response> {
+        if let Some(session_id) = &self.session_id {
+            req.headers_mut().insert("session-id", session_id.to_string().parse().unwrap());
+        }
+        let res = next.run(req, extensions).await;
+        res
+    }
+}
+
+
 #[derive(Default)]
 struct S2SecretData {
     user_name: Option<String>,
@@ -24,6 +49,7 @@ struct S2SecretData {
     session_key: SecretBox<Option<Vec<u8>>>,
     password_encryption_key: SecretBox<Option<Vec<u8>>>,
     server_key_file: SecretBox<Option<Vec<u8>>>,
+    http_client: reqwest_middleware::ClientWithMiddleware,
 }
 
 
@@ -65,18 +91,33 @@ async fn register_user(email: String, name: String, master_password: String) -> 
 }
 
 #[tauri::command]
-fn is_authenticated(state: State<'_, Mutex<S2SecretData>>) -> bool {
-    let state = state.lock().unwrap();
-    state.session_id.is_some() && state.session_key.expose_secret().is_some() && state.password_encryption_key.expose_secret().is_some()
+async fn is_authenticated(state: State<'_, Mutex<S2SecretData>>) -> Result<bool, ()> {
+    let state = state.lock().await;
+    Ok(state.session_id.is_some())
 }
 
 #[tauri::command]
 async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().await;
+    state.user_name = None;
+    state.user_email = None;
     state.session_key.zeroize();
     state.password_encryption_key.zeroize();
     state.server_key_file.zeroize();
-    //TODO: send logout request to server
+    state.http_client.post("http://localhost:3000/auth/user/logout")
+    .send()
+    .await
+    .map_err(|_| ())?;
+    state.session_id = None;
+    //let http_client = reqwest::Client::new();
+    //#if let Some(session_id) = state.session_id {
+    //    http_client.post("http://localhost:3000/auth/user/logout")
+    //    .header("session-id", &session_id.to_string())
+    //    .send()
+    //    .await
+    //    .map_err(|_| ())?;
+    //    state.session_id = None;
+    //}
     Ok("User logged out successfully".to_string())
 }
 
@@ -97,7 +138,7 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
     if login_initial_response.status() != 200 {
         return Err(());
     }
-    let session_id = login_initial_response.headers().get("session-id").unwrap().clone();
+    let temp_session_id = login_initial_response.headers().get("session-id").unwrap().clone();
     let login_initial_response_json: Vec<u8> = login_initial_response.json().await.map_err(|_| ())?;
     let client_login_finish_result = client_login_start_result.state.finish(
         master_password.as_bytes(),
@@ -109,17 +150,24 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
             "email": email,
             "message": client_login_finish_result.message
         }))
-        .header("session-id", &session_id)
+        .header("session-id", &temp_session_id)
         .send()
         .await
         .map_err(|_| ())?;
     if client_final_response.status() != 200 {
         return Err(());
     }
-    let mut state = state.lock().unwrap();
+    let session_id = client_final_response.headers().get("session-id").unwrap().clone();
+    let mut state = state.lock().await;
     state.session_id = Some(uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap());
     state.session_key = SecretBox::new(Box::new(Some(client_login_finish_result.session_key.to_vec())));
     state.password_encryption_key = SecretBox::new(Box::new(Some(client_login_finish_result.export_key.to_vec())));
+    let http_client = Client::builder().build().unwrap();
+    state.http_client = ClientBuilder::new(http_client)
+    .with(SessionHeaderMiddleware {
+        session_id: state.session_id.clone(),
+    })
+    .build();
     Ok("User login successfully".to_string())
 }
 
