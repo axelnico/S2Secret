@@ -1,5 +1,9 @@
 <script lang="ts">
 
+    import { invoke } from "@tauri-apps/api/core";
+
+    let new_secret = $state({ title: "", userName: "", password: "", site: "", notes: "" });
+
     let secrets = $state([{ title: "Home Router", username: "asus-test", password: "random_password1", site:"https://example.com", notes: "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua." }, 
     { title: "Facebook", username: "facebook_user", password: "random_password2" },
      { title: "Bank", username: "bank_user", password: "random_pasword3", site:"https://example.com" }]);
@@ -13,6 +17,11 @@
       const password = document.getElementById("password") as HTMLInputElement;
       password.type = password.type === "password" ? "text" : "password";
     }
+
+    async function create_secret() {
+      const secret_creation_response = await invoke("add_secret", new_secret);
+    }
+
 </script>
 
 <div class="navbar bg-base-100 items-center">
@@ -106,6 +115,7 @@
             required
             placeholder="My Secret" 
             class="input input-secondary w-full"
+            bind:value={new_secret.title}
           />
         </div>
 
@@ -119,6 +129,7 @@
               name="username" 
               placeholder="@username" 
               class="input input-secondary w-full"
+              bind:value={new_secret.userName}
             />
           </div>
 
@@ -132,6 +143,7 @@
               name="site" 
               placeholder="https://example.com" 
               class="input input-secondary w-full"
+              bind:value={new_secret.site}
             />
           </div>
         
@@ -147,6 +159,7 @@
             required
             placeholder="********" 
             class="input input-secondary w-full"
+            bind:value={new_secret.password}
           />
         </div>
         <div class="form-control">
@@ -157,6 +170,7 @@
             id="notes"
             name="notes"
             placeholder="Insert additional notes here (max 1024 characters)"
+            bind:value={new_secret.notes}
             class="textarea textarea-bordered textarea-secondary textarea-sm w-full"></textarea>
         </div>
         
@@ -166,7 +180,7 @@
         <!-- if there is a button in form, it will close the modal -->
         <button class="btn">Cancel</button>
       </form>
-      <button class="btn btn-primary" onclick={() => {}}>Add secret</button>
+      <button class="btn btn-primary" onclick={create_secret}>Add secret</button>
     </div>
   </div>
 </dialog>

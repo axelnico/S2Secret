@@ -1,4 +1,5 @@
 use secrecy::{zeroize::Zeroize, ExposeSecret, ExposeSecretMut, SecretBox};
+use sharks::{Sharks, Share};
 use tauri::State;
 use tokio::sync::Mutex;
 use tauri_plugin_http::reqwest;
@@ -9,6 +10,10 @@ use tauri::{Builder, Manager};
 use reqwest_middleware::{Middleware, Next, ClientBuilder, Result as MiddlewareResult};
 use reqwest::{Request, Response, Client};
 use tauri::http::Extensions;
+use base64::prelude::*;
+use aes_gcm::{
+    aead::{Aead, AeadCore, KeyInit}, aes::Aes256, Aes256Gcm, Key, Nonce
+};
 
 struct DefaultCipherSuite;
 
@@ -171,6 +176,50 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
     Ok("User login successfully".to_string())
 }
 
+fn encrypt(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, ()> {
+    let key = Key::<Aes256Gcm>::from_slice(&key[..32]);
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let ciphertext = cipher.encrypt(&nonce, plaintext.as_ref()).map_err(|_| ())?;
+    Ok([nonce.to_vec(), ciphertext].concat())
+}
+
+fn decrypt(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, ()> {
+    let key = Key::<Aes256Gcm>::from_slice(&key[..32]);
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Nonce::from_slice(&ciphertext[..12]);
+    cipher.decrypt(nonce, &ciphertext[12..]).map_err(|_| ())
+}
+
+#[tauri::command]
+async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_name: String, password: String, site: String, notes: String) -> Result<String, ()> {
+    let sharks = Sharks(2);
+    let dealer = sharks.dealer(password.as_bytes());
+    let shares: Vec<Share> = dealer.take(2).collect();
+    let state = state.lock().await;
+    let password_key = state.password_encryption_key.expose_secret().as_ref().unwrap();
+    
+    let encrypted_title = encrypt(password_key, title.as_bytes())?;
+    let encrypted_user_name = encrypt(password_key, user_name.as_bytes())?;
+    let encrypted_site =  encrypt(password_key, site.as_bytes())?;
+    let encrypted_notes =  encrypt(password_key, notes.as_bytes())?;
+    let add_secret_response = state.http_client.post("http://localhost:3000/secrets")
+        .json(&serde_json::json!({
+            "title": BASE64_STANDARD.encode(encrypted_title),
+            "user_name": BASE64_STANDARD.encode(encrypted_user_name),
+            "server_share": BASE64_STANDARD.encode(Vec::from(&shares[0])),
+            "site": BASE64_STANDARD.encode(encrypted_site),
+            "notes": BASE64_STANDARD.encode(encrypted_notes)
+        }))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if add_secret_response.status() != 200 {
+        return Err(());
+    }
+    Ok("Secret added successfully".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     Builder::default()
@@ -180,7 +229,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![login,register_user,is_authenticated,logout])
+        .invoke_handler(tauri::generate_handler![login,register_user,is_authenticated,logout, add_secret])
         .run(tauri::generate_context!())
         .expect("error while running S2Secret application");
 }

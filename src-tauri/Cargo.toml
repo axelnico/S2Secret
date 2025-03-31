@@ -29,5 +29,8 @@ tauri-plugin-http = { version = "2", features= ["json"] }
 uuid = { version = "1.10.0", features = ["v4", "serde"] }
 secrecy = "0.10.3"
 tokio = { version = "1.39.3", features = ["full"] }
-reqwest-middleware = { version = "0.4.1" }
+reqwest-middleware = { version = "0.4.1", features= ["json"] }
 async-trait = "0.1"
+sharks = { git = "https://github.com/axelnico/sharks.git"}
+base64 = "0.22.1"
+aes-gcm = "0.10.3"
