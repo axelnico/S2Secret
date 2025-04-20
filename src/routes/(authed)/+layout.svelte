@@ -35,6 +35,13 @@
   <div class="drawer-side">
     <label for="my-drawer-2" aria-label="close sidebar" class="drawer-overlay"></label>
     <ul class="menu bg-base-200 text-base-content min-h-full w-90 p-4">
+      <li><div class="avatar">
+        <div class="w-24 rounded">
+          <img src="https://img.daisyui.com/images/stock/photo-1534528741775-53994a69daeb.webp" />
+        </div>
+      </div></li>
+      <li>
+        <h2 class="menu-title">Welcome UserName</h2>
       <!-- Sidebar content here -->
       <li>
         <a href="secrets">
