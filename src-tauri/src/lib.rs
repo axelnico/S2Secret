@@ -14,6 +14,7 @@ use base64::prelude::*;
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit}, aes::Aes256, Aes256Gcm, Key, Nonce
 };
+use uuid::Uuid;
 
 struct DefaultCipherSuite;
 
@@ -48,6 +49,7 @@ impl Middleware for SessionHeaderMiddleware {
 
 #[derive(Default)]
 struct S2SecretData {
+    user_id: Option<Uuid>,
     user_name: Option<String>,
     user_email: Option<String>,
     session_id: Option<uuid::Uuid>,
@@ -100,6 +102,24 @@ async fn is_authenticated(state: State<'_, Mutex<S2SecretData>>) -> Result<bool,
     let state = state.lock().await;
     Ok(state.session_id.is_some())
 }
+
+#[tauri::command]
+async fn logged_user_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
+    let mut state = state.lock().await;
+    let user_data = state.http_client.get("http://localhost:3000/user")
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if user_data.status() != 200 {
+        return Err(());
+    }
+    let user_data_json: serde_json::Value = user_data.json().await.map_err(|_| ())?;
+    state.user_id = Some(Uuid::parse_str(user_data_json["id_user"].as_str().unwrap()).unwrap());
+    state.user_name = Some(user_data_json["name"].as_str().unwrap().to_string());
+    state.user_email = Some(user_data_json["email"].as_str().unwrap().to_string());
+    Ok("Loaded user data".to_string())
+}
+
 
 #[tauri::command]
 async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
@@ -192,6 +212,19 @@ fn decrypt(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, ()> {
 }
 
 #[tauri::command]
+async fn delete_secret(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -> Result<String, ()> {
+    let state = state.lock().await;
+    let delete_secret_response = state.http_client.delete(format!("http://localhost:3000/secrets/{}", &secret_id))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if delete_secret_response.status() != 200 {
+        return Err(());
+    }
+    Ok("Secret deleted successfully".to_string())
+}
+
+#[tauri::command]
 async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_name: String, password: String, site: String, notes: String) -> Result<String, ()> {
     let sharks = Sharks(2);
     let dealer = sharks.dealer(password.as_bytes());
@@ -229,7 +262,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![login,register_user,is_authenticated,logout, add_secret])
+        .invoke_handler(tauri::generate_handler![login,register_user,is_authenticated,logout, add_secret, delete_secret, logged_user_data])
         .run(tauri::generate_context!())
         .expect("error while running S2Secret application");
 }
