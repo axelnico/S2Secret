@@ -1,9 +1,10 @@
 use secrecy::{zeroize::Zeroize, ExposeSecret, ExposeSecretMut, SecretBox};
+use serde::{Deserialize, Serialize};
 use sharks::{Sharks, Share};
 use tauri::State;
 use tokio::sync::Mutex;
 use tauri_plugin_http::reqwest;
-use opaque_ke::{CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientRegistration, ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse};
+use opaque_ke::{CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientLoginFinishResult, ClientRegistration, ClientRegistrationFinishParameters, CredentialFinalization, CredentialRequest, CredentialResponse, RegistrationResponse};
 use rand::rngs::OsRng;
 use argon2::Argon2;
 use tauri::{Builder, Manager};
@@ -146,17 +147,32 @@ async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     Ok("User logged out successfully".to_string())
 }
 
+#[derive(Serialize,Deserialize)]
+struct LoginInitialRequest {
+    email: String,
+    message: CredentialRequest<DefaultCipherSuite>,
+}
+
+#[derive(Serialize,Deserialize)]
+struct LoginFinalRequest {
+    email: String,
+    message: CredentialFinalization<DefaultCipherSuite>,
+}
+
 #[tauri::command]
 async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_password: String) -> Result<String, ()> {
     let mut client_rng = OsRng;
     let client_login_start_result = ClientLogin::<DefaultCipherSuite>::start(&mut client_rng, master_password.as_bytes()).unwrap();
     let login_request_bytes = client_login_start_result.message;
     let http_client = reqwest::Client::new();
+    let mut buffer = Vec::new();
+    let login_initial_request = LoginInitialRequest {
+        email: email.clone(),
+        message: login_request_bytes.clone(),
+    };
+    ciborium::ser::into_writer(&login_initial_request,&mut buffer).map_err(|_| ())?;
     let login_initial_response = http_client.post("http://localhost:3000/auth/user/login")
-        .json(&serde_json::json!({
-            "email": email,
-            "message": login_request_bytes
-        }))
+    .body(buffer)
         .send()
         .await
         .map_err(|_| ())?;
@@ -164,17 +180,21 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
         return Err(());
     }
     let temp_session_id = login_initial_response.headers().get("session-id").unwrap().clone();
-    let login_initial_response_json: Vec<u8> = login_initial_response.json().await.map_err(|_| ())?;
+    let response_bytes = login_initial_response.bytes().await.map_err(|_| ())?;
+    let login_initial_response_json: Vec<u8> = ciborium::de::from_reader(response_bytes.as_ref()).map_err(|_| ())?;
     let client_login_finish_result = client_login_start_result.state.finish(
         master_password.as_bytes(),
         CredentialResponse::deserialize(&login_initial_response_json).unwrap(),
         ClientLoginFinishParameters::default(),
     ).unwrap();
+    buffer = Vec::new();
+    let login_final_request = LoginFinalRequest {
+        email: email.clone(),
+        message: client_login_finish_result.message.clone(),
+    };
+    ciborium::ser::into_writer(&login_final_request,&mut buffer).map_err(|_| ())?;
     let client_final_response = http_client.post("http://localhost:3000/auth/user/login-finalize")
-        .json(&serde_json::json!({
-            "email": email,
-            "message": client_login_finish_result.message
-        }))
+        .body(buffer)
         .header("session-id", &temp_session_id)
         .send()
         .await

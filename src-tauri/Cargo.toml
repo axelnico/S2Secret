@@ -34,3 +34,4 @@ async-trait = "0.1"
 sharks = { git = "https://github.com/axelnico/sharks.git"}
 base64 = "0.22.1"
 aes-gcm = "0.10.3"
+ciborium = "0.2.2"
