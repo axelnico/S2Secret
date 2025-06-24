@@ -1,10 +1,10 @@
 use std::ops::DerefMut;
 
-use coset::{CborSerializable, CoseEncrypt0Builder, HeaderBuilder};
+use coset::{CborSerializable, CoseEncrypt0, CoseEncrypt0Builder, HeaderBuilder};
 use secrecy::{zeroize::Zeroize, ExposeSecret, ExposeSecretMut, SecretBox};
 use serde::{Deserialize, Serialize};
 use sharks::{Sharks, Share};
-use tauri::State;
+use tauri::{http::{self, HeaderName, HeaderValue}, State};
 use tokio::sync::Mutex;
 use tauri_plugin_http::reqwest;
 use opaque_ke::{CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientLoginFinishResult, ClientRegistration, ClientRegistrationFinishParameters, CredentialFinalization, CredentialRequest, CredentialResponse, RegistrationRequest, RegistrationResponse, RegistrationUpload};
@@ -12,7 +12,7 @@ use rand::rngs::OsRng;
 use argon2::Argon2;
 use tauri::{Builder, Manager};
 use reqwest_middleware::{Middleware, Next, ClientBuilder, Result as MiddlewareResult};
-use reqwest::{Request, Response, Client};
+use reqwest::{Request, Response, Client, StatusCode};
 use tauri::http::Extensions;
 use base64::prelude::*;
 use aes_gcm::{
@@ -20,6 +20,13 @@ use aes_gcm::{
 };
 use aes_gcm::aead::generic_array::typenum::U12;
 use uuid::Uuid;
+
+fn decrypt_using_nonce(key: &[u8], ciphertext: &[u8], nonce: &[u8]) -> Result<Vec<u8>, ()> {
+    let key = Key::<Aes256Gcm>::from_slice(&key[..32]);
+    let cipher = Aes256Gcm::new(&key);
+    let nonce = Nonce::from_slice(&nonce[..12]);
+    cipher.decrypt(nonce,ciphertext).map_err(|_| ())
+}
 
 struct DefaultCipherSuite;
 
@@ -31,7 +38,6 @@ impl CipherSuite for DefaultCipherSuite {
 }
 
 struct SecureSessionMiddleware {
-    /// Shared state holding the current session id, if any.
     session_id: uuid::Uuid,
     session_key: SecretBox<Vec<u8>>,
 }
@@ -50,12 +56,35 @@ impl Middleware for SecureSessionMiddleware {
                 let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
                 let cose_protected_header = HeaderBuilder::new().algorithm(coset::iana::Algorithm::A256GCM).build();
                 let cose_unprotected_header = HeaderBuilder::new().content_type(String::from("application/cose")).iv(nonce.to_vec()).build();
-                let encrypted_body = CoseEncrypt0Builder::new().protected(cose_protected_header).unprotected(cose_unprotected_header).ciphertext(encrypt_with_nonce(self.session_key.expose_secret(), request_body_bytes, nonce).unwrap_or_default()).build();
+                let encrypted_body = CoseEncrypt0Builder::new()
+                                                                    .protected(cose_protected_header)
+                                                                    .unprotected(cose_unprotected_header)
+                                                                    .ciphertext(encrypt_with_nonce(self.session_key.expose_secret(), request_body_bytes, nonce).unwrap_or_default())
+                                                                    .build();
                 *request_body = reqwest::Body::from(encrypted_body.to_vec().unwrap_or_default());
             }
         }
         let res = next.run(req, extensions).await;
-        res
+        match res {
+            Ok(response) => {
+                let response_status = response.status();
+                let response_bytes = response.bytes().await.unwrap_or_default();
+                let response_builder = http::Response::builder().status(response_status);
+                let final_response;
+                if ! response_bytes.is_empty() {
+                    let cose_message = CoseEncrypt0::from_slice(response_bytes.as_ref()).unwrap_or_default();
+                    let nonce = cose_message.unprotected.iv;
+                    let cbor_encrypted_payload = cose_message.ciphertext.unwrap_or_default();
+                    let decrypted_request_content = decrypt_using_nonce(self.session_key.expose_secret(),&cbor_encrypted_payload,&nonce).unwrap_or_default();
+                    let decrypted_body = reqwest::Body::from(decrypted_request_content);
+                    final_response = response_builder.body(decrypted_body).unwrap();
+                } else {
+                    final_response = response_builder.body(reqwest::Body::default()).unwrap();
+                }
+                Ok(Response::from(final_response))
+            },
+            Err(e) => Err(e),
+        }
     }
 }
 
