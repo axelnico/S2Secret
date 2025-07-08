@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use tauri_plugin_http::reqwest;
 use opaque_ke::{CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientLoginFinishResult, ClientRegistration, ClientRegistrationFinishParameters, CredentialFinalization, CredentialRequest, CredentialResponse, RegistrationRequest, RegistrationResponse, RegistrationUpload};
 use rand::rngs::OsRng;
+use rand::RngCore;
 use argon2::Argon2;
 use tauri::{Builder, Manager};
 use reqwest_middleware::{Middleware, Next, ClientBuilder, Result as MiddlewareResult};
@@ -20,6 +21,7 @@ use aes_gcm::{
 };
 use aes_gcm::aead::generic_array::typenum::U12;
 use uuid::Uuid;
+use sqlx::{sqlite::SqliteConnectOptions,SqlitePool,SqliteTransaction};
 
 fn decrypt_using_nonce(key: &[u8], ciphertext: &[u8], nonce: &[u8]) -> Result<Vec<u8>, ()> {
     let key = Key::<Aes256Gcm>::from_slice(&key[..32]);
@@ -99,6 +101,7 @@ struct S2SecretData {
     password_encryption_key: SecretBox<Option<Vec<u8>>>,
     server_key_file: SecretBox<Option<Vec<u8>>>,
     http_client: reqwest_middleware::ClientWithMiddleware,
+    client_local_data_path: String,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -195,6 +198,34 @@ async fn is_authenticated(state: State<'_, Mutex<S2SecretData>>) -> Result<bool,
 }
 
 #[tauri::command]
+async fn create_client_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
+   let state = state.lock().await;
+   let client_db_connection_options = SqliteConnectOptions::new()
+        .filename(&state.client_local_data_path)
+        .create_if_missing(true);
+    let client_db_pool = SqlitePool::connect_with(client_db_connection_options).await.map_err(|_| ())?;
+    let mut transaction = client_db_pool.begin().await.map_err(|_| ())?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS user (id TEXT PRIMARY KEY, client_key_file BLOB NOT NULL)")
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS secret (id TEXT PRIMARY KEY, client_share BLOB NOT NULL, encryption_key BLOB NOT NULL, FOREIGN KEY (user_id) REFERENCES user(id))")
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    let mut client_key_file = [0u8; 32];
+    OsRng.fill_bytes(&mut client_key_file);
+    sqlx::query("INSERT INTO user (id, client_key_file) VALUES (?, ?)")
+        .bind(state.user_id.unwrap_or_default().to_string())
+        .bind(client_key_file.to_vec())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    Ok("Client data created successfully".to_string())
+}
+
+#[tauri::command]
 async fn logged_user_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
     let user_data = state.http_client.get("http://localhost:3000/user")
@@ -216,6 +247,7 @@ async fn logged_user_data(state: State<'_, Mutex<S2SecretData>>) -> Result<Strin
 #[tauri::command]
 async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
+    state.user_id = None;
     state.user_name = None;
     state.user_email = None;
     state.session_key.zeroize();
