@@ -15,7 +15,7 @@
     }
 
     async function delete_secret() {
-      const secret_deletion_response = await invoke("delete_secret", { secret_id: secret.id });
+      const secret_deletion_response = await invoke("delete_secret", { secretId: secret.id });
     }
 
     function showDeleteModal() {
@@ -41,7 +41,7 @@
         <div class="card bg-base-300 rounded-box h-20 flex flex-row grow items-center space-x-2 px-4 flex-1">
           <span class="font-semibold mr-2">Username:</span>
           <button class="pointer-events-auto p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={() => {}}>
-            <span class="font-semibold mr-2">{secret.username}</span>
+            <span class="font-semibold mr-2">{secret.user_name}</span>
             </button>
         </div>
         <div class="divider divider-horizontal divider-primary"></div>

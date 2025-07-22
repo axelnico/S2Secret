@@ -37,7 +37,7 @@
     <ul class="menu bg-base-200 text-base-content min-h-full w-90 p-4">
       <li><div class="avatar">
         <div class="w-24 rounded">
-          <img src="https://img.daisyui.com/images/stock/photo-1534528741775-53994a69daeb.webp" />
+          <img src="/s2secret-logo.svg" alt="S2Secret Logo"/>
         </div>
       </div></li>
       <li>

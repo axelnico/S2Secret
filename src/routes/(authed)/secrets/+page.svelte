@@ -3,11 +3,14 @@
     import { invoke } from "@tauri-apps/api/core";
     import Secret from "../../../components/Secret.svelte";
 
+    let {data} = $props();
+
+    console.log("Passwords loaded:", data);
     let new_secret = $state({ title: "", userName: "", password: "", site: "", notes: "" });
 
-    let secrets = $state([{ id: "a", title: "Home Router", username: "asus-test", password: "random_password1", site:"https://example.com", notes: "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua." }, 
-    { id:"b", title: "Facebook", username: "facebook_user", password: "random_password2" },
-     { id:"c", title: "Bank", username: "bank_user", password: "random_pasword3", site:"https://example.com" }]);
+    let secrets = $state([{ id: "a", title: "Home Router", user_name: "asus-test", password: "random_password1", site:"https://example.com", notes: "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua." }, 
+    { id:"b", title: "Facebook", user_name: "facebook_user", password: "random_password2" },
+     { id:"c", title: "Bank", user_name: "bank_user", password: "random_pasword3", site:"https://example.com" }]);
 
     function showModal() {
       const modal = document.getElementById("my_modal_5") as HTMLDialogElement;
@@ -34,7 +37,7 @@
 
 <div class="flex flex-col h-full p-4">
   <div class="space-y-4">
-    {#each secrets as secret}
+    {#each data.passwords as secret}
     <Secret {...secret} />
     {/each}
   </div>
