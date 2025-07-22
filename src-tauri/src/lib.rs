@@ -1,4 +1,4 @@
-use std::ops::DerefMut;
+use std::{collections::HashMap, ops::DerefMut};
 
 use coset::{CborSerializable, CoseEncrypt0, CoseEncrypt0Builder, HeaderBuilder};
 use secrecy::{zeroize::Zeroize, ExposeSecret, ExposeSecretMut, SecretBox};
@@ -42,6 +42,15 @@ impl CipherSuite for DefaultCipherSuite {
 struct SecureSessionMiddleware {
     session_id: uuid::Uuid,
     session_key: SecretBox<Vec<u8>>,
+}
+#[derive(Clone,Serialize,Deserialize)]
+struct Password {
+    id: Uuid,
+    title: String,
+    user_name: Option<String>,
+    site: Option<String>,
+    notes: Option<String>,
+    password: Option<String>
 }
 
 #[async_trait::async_trait]
@@ -102,6 +111,7 @@ struct S2SecretData {
     server_key_file: SecretBox<Option<Vec<u8>>>,
     http_client: reqwest_middleware::ClientWithMiddleware,
     client_local_data_path: String,
+    passwords: HashMap<Uuid, Password>,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -123,14 +133,27 @@ struct UserDataResponse {
     name: String,
     server_key_file: Vec<u8>
 }
+#[derive(Serialize,Deserialize)]
+struct CreatedSecretResponse {
+    id_secret: uuid::Uuid,
+}
 
 #[derive(Serialize,Deserialize)]
 struct NewSecretRequest {
-    title: String,
-    user_name: Option<String>,
-    site: Option<String>,
-    notes: Option<String>,
-    server_share: String,
+    title: Vec<u8>,
+    user_name: Option<Vec<u8>>,
+    site: Option<Vec<u8>>,
+    notes: Option<Vec<u8>>,
+    server_share: Vec<u8>,
+}
+
+#[derive(Serialize,Deserialize)]
+struct Secret {
+    id_secret: Uuid,
+    title: Vec<u8>,
+    user_name: Option<Vec<u8>>,
+    site: Option<Vec<u8>>,
+    notes: Option<Vec<u8>>,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -199,23 +222,24 @@ async fn is_authenticated(state: State<'_, Mutex<S2SecretData>>) -> Result<bool,
 
 #[tauri::command]
 async fn create_client_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
-   let state = state.lock().await;
+   let mut state = state.lock().await;
+   state.client_local_data_path = "/tmp/s2secret.sqlite".to_string();
    let client_db_connection_options = SqliteConnectOptions::new()
         .filename(&state.client_local_data_path)
         .create_if_missing(true);
     let client_db_pool = SqlitePool::connect_with(client_db_connection_options).await.map_err(|_| ())?;
     let mut transaction = client_db_pool.begin().await.map_err(|_| ())?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS user (id TEXT PRIMARY KEY, client_key_file BLOB NOT NULL)")
+    sqlx::query("CREATE TABLE IF NOT EXISTS user (id TEXT PRIMARY KEY, client_key_file BLOB NOT NULL);")
         .execute(&mut *transaction)
         .await
         .map_err(|_| ())?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS secret (id TEXT PRIMARY KEY, client_share BLOB NOT NULL, encryption_key BLOB NOT NULL, FOREIGN KEY (user_id) REFERENCES user(id))")
+    sqlx::query("CREATE TABLE IF NOT EXISTS secret (id TEXT PRIMARY KEY, client_share BLOB NOT NULL, encryption_key BLOB NOT NULL, user_id TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES user(id));")
         .execute(&mut *transaction)
         .await
         .map_err(|_| ())?;
     let mut client_key_file = [0u8; 32];
     OsRng.fill_bytes(&mut client_key_file);
-    sqlx::query("INSERT INTO user (id, client_key_file) VALUES (?, ?)")
+    sqlx::query("INSERT INTO user (id, client_key_file) VALUES (?, ?) ON CONFLICT(id) DO NOTHING;")
         .bind(state.user_id.unwrap_or_default().to_string())
         .bind(client_key_file.to_vec())
         .execute(&mut *transaction)
@@ -351,17 +375,88 @@ fn decrypt(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, ()> {
     cipher.decrypt(nonce, &ciphertext[12..]).map_err(|_| ())
 }
 
+async fn store_local_share(
+    state: &S2SecretData,
+    secret_id: &uuid::Uuid,
+    share: &Share,
+) -> Result<(), ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    sqlx::query("INSERT INTO secret (id, client_share, encryption_key, user_id) VALUES (?, ?, ?, ?)")
+        .bind(secret_id.to_string())
+        .bind(Vec::from(share))
+        .bind(state.password_encryption_key.expose_secret().as_ref().unwrap())
+        .bind(state.user_id.unwrap_or_default().to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn delete_secret(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -> Result<String, ()> {
-    let state = state.lock().await;
+    let mut state = state.lock().await;
     let delete_secret_response = state.http_client.delete(format!("http://localhost:3000/secrets/{}", &secret_id))
         .send()
         .await
         .map_err(|_| ())?;
-    if delete_secret_response.status() != 200 {
+    if delete_secret_response.status() != 204 {
+        return Err(());
+    } else {
+        state.passwords.remove(&secret_id);
+        Ok("Secret deleted successfully".to_string())
+    }
+}
+
+#[tauri::command]
+async fn passwords(state: State<'_, Mutex<S2SecretData>>) -> Result<Vec<Password>, ()> {
+    let state = state.lock().await;
+    Ok(state.passwords.values().cloned().collect())
+}
+
+#[tauri::command]
+async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
+    let mut state = state.lock().await;
+    let secrets_response = state.http_client.get(format!("http://localhost:3000/secrets"))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if secrets_response.status() != 200 {
         return Err(());
     }
-    Ok("Secret deleted successfully".to_string())
+    else {
+        let secrets_response_bytes = secrets_response.bytes().await.map_err(|_| ())?;
+        let secrets: Vec<Secret> = ciborium::de::from_reader(secrets_response_bytes.as_ref()).map_err(|_| ())?;
+        for secret in secrets {
+            let decrypted_title = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &secret.title).map_err(|_| ())?;
+            let title = String::from_utf8(decrypted_title).map_err(|_| ())?;
+            let mut user_name: Option<String> = None;
+            let mut site: Option<String> = None;
+            let mut notes: Option<String> = None;
+            if let Some(user_name_encrypted) = secret.user_name {
+                let user_name_decrypted = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &user_name_encrypted).map_err(|_| ())?;
+                user_name = Some(String::from_utf8(user_name_decrypted).map_err(|_| ())?);
+            }
+            if let Some(site_encrypted) = secret.site {
+                let decrypted_site = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &site_encrypted).map_err(|_| ())?;
+                site = Some(String::from_utf8(decrypted_site).map_err(|_| ())?);
+            }
+            if let Some(notes_encrypted) = secret.notes {
+                let decrypted_notes = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &notes_encrypted).map_err(|_| ())?;
+                notes = Some(String::from_utf8(decrypted_notes).map_err(|_| ())?);
+            }
+            state.passwords.entry(secret.id_secret)
+                .or_insert(Password {
+                    id: secret.id_secret,
+                    title,
+                    user_name,
+                    site,
+                    notes,
+                    password: None, // Passwords are not loaded here, only descriptive data
+                });
+        }
+        Ok("Load secrets descriptive data successfully".to_string())
+    }
 }
 
 #[tauri::command]
@@ -378,11 +473,11 @@ async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_n
     let encrypted_notes =  encrypt(password_key, notes.as_bytes())?;
     let mut buffer = Vec::new();
     let new_secret_request = NewSecretRequest {
-        title: BASE64_STANDARD.encode(encrypted_title),
-        user_name: if user_name.is_empty() { None } else { Some(BASE64_STANDARD.encode(encrypted_user_name)) },
-        site: if site.is_empty() { None } else { Some(BASE64_STANDARD.encode(encrypted_site)) },
-        notes: if notes.is_empty() { None } else { Some(BASE64_STANDARD.encode(encrypted_notes)) },
-        server_share: BASE64_STANDARD.encode(Vec::from(&shares[0])),
+        title: encrypted_title,
+        user_name: if user_name.is_empty() { None } else { Some(encrypted_user_name) },
+        site: if site.is_empty() { None } else { Some(encrypted_site) },
+        notes: if notes.is_empty() { None } else { Some(encrypted_notes) },
+        server_share: Vec::from(&shares[0]),
     };
     ciborium::ser::into_writer(&new_secret_request,&mut buffer).map_err(|_| ())?;
     let add_secret_response = state.http_client.post("http://localhost:3000/secrets")
@@ -390,8 +485,14 @@ async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_n
         .send()
         .await
         .map_err(|_| ())?;
-    if add_secret_response.status() != 200 {
+    if add_secret_response.status() != 201 {
         return Err(());
+    } else {
+        let add_secret_response_bytes = add_secret_response.bytes().await.map_err(|_| ())?;
+        let add_secret_id_response: CreatedSecretResponse = ciborium::de::from_reader(add_secret_response_bytes.as_ref()).map_err(|_| ())?;
+        if let Err(_) = store_local_share(&state, &add_secret_id_response.id_secret ,&shares[1]).await {
+            return Err(());
+        }
     }
     Ok("Secret added successfully".to_string())
 }
@@ -405,7 +506,16 @@ pub fn run() {
         })
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
-        .invoke_handler(tauri::generate_handler![login,register_user,is_authenticated,logout, add_secret, delete_secret, logged_user_data])
+        .plugin(tauri_plugin_fs::init())
+        .invoke_handler(tauri::generate_handler![login,register_user,
+            is_authenticated,
+            logout, 
+            add_secret, 
+            delete_secret, 
+            logged_user_data,
+            passwords,
+            load_secrets_descriptive_data,
+            create_client_data])
         .run(tauri::generate_context!())
         .expect("error while running S2Secret application");
 }
