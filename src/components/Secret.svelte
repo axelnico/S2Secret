@@ -1,26 +1,16 @@
 <script lang="ts">
 
     import { invoke } from "@tauri-apps/api/core";
+    import SecretDeleteForm from "./SecretDeleteForm.svelte";
 
     let secret = $props();
 
-    let deleteConfirmationInputText = $state("");
-
-    let deleteConfirmationInputTextHint = `delete ${secret.title}`;
+    let deleteModalOpen = $state(false);
 
     let passwordVisible = $state(false);
 
     function togglePasswordVisiblity() {
       passwordVisible = !passwordVisible;
-    }
-
-    async function delete_secret() {
-      const secret_deletion_response = await invoke("delete_secret", { secretId: secret.id });
-    }
-
-    function showDeleteModal() {
-      const delete_modal = document.getElementById(`delete-modal-${secret.id}`) as HTMLDialogElement;
-      delete_modal.showModal();
     }
 </script>
 
@@ -140,7 +130,7 @@
             <path d="M14.91 4.1499C15.58 6.5399 17.45 8.4099 19.85 9.0899" stroke="#292D32" stroke-width="1.5" stroke-miterlimit="10" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
         </button>
-        <button aria-label="delete-secret" class="p-2 bg-transparent border-none text-error hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={showDeleteModal}>
+        <button aria-label="delete-secret" class="p-2 bg-transparent border-none text-error hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={() => deleteModalOpen = true}>
           <svg width="25" height="25" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M10 12V17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             <path d="M14 12V17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -155,34 +145,8 @@
 </div>
     </div>
 
-    <dialog id="delete-modal-{secret.id}" class="modal modal-bottom sm:modal-middle">
-  <div class="modal-box">
-    <h3 class="text-lg font-bold">Secret Deletion</h3>
-    <p class="py-4">You are going to delete all the information related to {secret.title}.</p>
-    <p class="py-4"><span class="text-warning">Warning: This action is irreversible!</span> If you are sure to continue please complete the input below with the words "delete" followed by a space and the title of the secret you want to delete.</p>
-      
-      <!-- Form -->
-      <form class="space-y-4">
-        
-        <div class="form-control">
-          <input 
-            type="text" 
-            id="title" 
-            name="title" 
-            required
-            placeholder={deleteConfirmationInputTextHint}
-            class="input input-secondary w-full"
-            bind:value={deleteConfirmationInputText}
-          />
-        </div>
-
-      </form>
-    <div class="modal-action">
-      <form method="dialog">
-        <!-- if there is a button in form, it will close the modal -->
-        <button onclick={() => deleteConfirmationInputText = ""} class="btn">Cancel</button>
-      </form>
-      <button disabled={deleteConfirmationInputText != deleteConfirmationInputTextHint} class="btn btn-error" onclick={delete_secret}>Delete secret</button>
-    </div>
-  </div>
-</dialog>
+<SecretDeleteForm 
+    secretTitle={secret.title} 
+    secretId={secret.id} 
+    isOpened={deleteModalOpen} 
+    onClose={() => { deleteModalOpen = false; }} />
