@@ -7,6 +7,8 @@
 
   let { children }: Props = $props();
 
+  let userName = $state("user_name");
+
   async function logout() {
       await invoke("logout");
       goto("/", { replaceState: true });

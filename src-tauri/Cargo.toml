@@ -38,3 +38,5 @@ ciborium = "0.2.2"
 coset = "0.3.8"
 sqlx = { version = "0.8.1", features = ["sqlite", "runtime-tokio"] }
 tauri-plugin-fs = "2"
+chrono = { version = "0.4.38", features = ["serde"] }
+tauri-plugin-clipboard-manager = "2"

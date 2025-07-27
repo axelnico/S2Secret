@@ -2,15 +2,43 @@
 
     import { invoke } from "@tauri-apps/api/core";
     import SecretDeleteForm from "./SecretDeleteForm.svelte";
+    import SecretForm from "./SecretForm.svelte";
 
     let secret = $props();
 
     let deleteModalOpen = $state(false);
 
+    let editSecretModalOpen = $state(false);
+
     let passwordVisible = $state(false);
 
     function togglePasswordVisiblity() {
       passwordVisible = !passwordVisible;
+    }
+
+    let password = $state("");
+
+    async function revealPassword() {
+      password = await invoke<string>("reveal_password", { secretId: secret.id });
+      passwordVisible = true;
+    }
+
+    async function copyPasswordToClipboard() {
+      await invoke("copy_password", { secretId: secret.id });
+    }
+
+    interface SecretUpsert {
+        id: string;
+        title: string;
+        userName?: string;
+        site?: string;
+        password: string;
+        notes?: string;
+    };
+
+    async function update_secret(secret_updated: SecretUpsert) {
+      const secret_creation_response = await invoke("update_secret", { ...secret_updated });
+      editSecretModalOpen = false;
     }
 </script>
 
@@ -37,9 +65,9 @@
         <div class="divider divider-horizontal divider-primary"></div>
         <div class="card bg-base-300 rounded-box h-20 flex flex-row grow items-center space-x-2 px-4 flex-1">
           <span class="font-semibold mr-2">Password:</span>
-      <button class="pointer-events-auto p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={togglePasswordVisiblity}>
+      <button class="pointer-events-auto p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={copyPasswordToClipboard}>
         {#if passwordVisible}
-        <span class="text-base normal-case">{secret.password}</span>
+        <span class="text-base normal-case">{password}</span>
         {:else}
         <div class="flex items-center">
           {#each { length: 12 }, password}
@@ -57,7 +85,7 @@
       
       
 
-      <button class="pointer-events-auto p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={togglePasswordVisiblity}>
+      <button class="pointer-events-auto p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={revealPassword}>
         <svg
           fill="currentColor"
           width="25"
@@ -123,7 +151,7 @@
             
             </svg>
         </button>
-        <button aria-label="edit-secret" class="p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={() => {}}>
+        <button aria-label="edit-secret" class="p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={() => { editSecretModalOpen = true}}>
           <svg width="25" height="25" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
             <path d="M11 2H9C4 2 2 4 2 9V15C2 20 4 22 9 22H15C20 22 22 20 22 15V13" stroke="#292D32" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             <path d="M16.04 3.02001L8.16 10.9C7.86 11.2 7.56 11.79 7.5 12.22L7.07 15.23C6.91 16.32 7.68 17.08 8.77 16.93L11.78 16.5C12.2 16.44 12.79 16.14 13.1 15.84L20.98 7.96001C22.34 6.60001 22.98 5.02001 20.98 3.02001C18.98 1.02001 17.4 1.66001 16.04 3.02001Z" stroke="#292D32" stroke-width="1.5" stroke-miterlimit="10" stroke-linecap="round" stroke-linejoin="round"/>
@@ -150,3 +178,9 @@
     secretId={secret.id} 
     isOpened={deleteModalOpen} 
     onClose={() => { deleteModalOpen = false; }} />
+
+  <SecretForm 
+    secret={secret}
+    isOpened={editSecretModalOpen} 
+    onClose={() => editSecretModalOpen = false} 
+    onSave={update_secret} />

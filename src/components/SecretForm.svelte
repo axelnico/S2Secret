@@ -42,7 +42,9 @@
           <input 
             type="text" 
             id="title" 
-            name="title" 
+            name="title"
+            autocapitalize="off"
+            autocomplete="off"
             required
             placeholder="My Secret" 
             class="input input-secondary w-full"
@@ -58,7 +60,9 @@
               type="text" 
               id="username" 
               name="username" 
-              placeholder="@username" 
+              placeholder="@username"
+              autocapitalize="off"
+              autocomplete="off"
               class="input input-secondary w-full"
               bind:value={secret_modification.userName}
             />
@@ -70,7 +74,9 @@
             </label>
             <input 
               type="url" 
-              id="site" 
+              id="site"
+              autocapitalize="off"
+              autocomplete="off"
               name="site" 
               placeholder="https://example.com" 
               class="input input-secondary w-full"
@@ -86,7 +92,9 @@
           <input 
             type="password" 
             id="password" 
-            name="password" 
+            name="password"
+            autocapitalize="off"
+            autocomplete="off"
             required
             placeholder="********" 
             class="input input-secondary w-full"

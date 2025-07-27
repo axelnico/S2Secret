@@ -9,6 +9,7 @@
     "core:default",
     "shell:allow-open",
     "http:default",
-    "fs:default"
+    "fs:default",
+    "clipboard-manager:default"
   ]
 }

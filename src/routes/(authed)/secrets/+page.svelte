@@ -22,6 +22,15 @@
       newSecretModalOpen = false;
     }
 
+    async function searchSecrets(term: string) {
+      console.log("Searching for:", term);
+      if (term.length >= 3) {
+        data = { passwords: await invoke("filter_by_search_term", { term }) };
+      } else {
+        data = { passwords: await invoke("passwords") };
+      }
+    }
+
 </script>
 
 <div class="navbar bg-base-100 items-center">
@@ -30,7 +39,7 @@
   </div>
   <div class="flex-none gap-2 m-3">
     <div class="form-control">
-      <input type="text" placeholder="Search" class="input input-bordered w-24 md:w-auto" />
+      <input type="text" autocapitalize="off" autocomplete="off" oninput={(e) => searchSecrets((e.target as HTMLInputElement)?.value)} placeholder="Search" class="input input-bordered w-24 md:w-auto" />
     </div>
    </div>
   </div>
