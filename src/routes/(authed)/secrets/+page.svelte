@@ -4,6 +4,14 @@
     import Secret from "../../../components/Secret.svelte";
     import SecretForm from "../../../components/SecretForm.svelte";
 
+    interface SecretListProps {
+        data: SecretList;
+    }
+
+    interface SecretList {
+        passwords: SecretUpsert[];
+    }
+
     interface SecretUpsert {
         id: string;
         title: string;
@@ -13,7 +21,7 @@
         notes?: string;
     };
 
-    let {data} = $props();
+    let {data} : SecretListProps = $props();
 
     let newSecretModalOpen = $state(false);
 
@@ -39,14 +47,14 @@
   </div>
   <div class="flex-none gap-2 m-3">
     <div class="form-control">
-      <input type="text" autocapitalize="off" autocomplete="off" oninput={(e) => searchSecrets((e.target as HTMLInputElement)?.value)} placeholder="Search" class="input input-bordered w-24 md:w-auto" />
+      <input type="text" autocorrect="off" autocapitalize="off" autocomplete="off" oninput={(e) => searchSecrets((e.target as HTMLInputElement)?.value)} placeholder="Search" class="input input-bordered w-24 md:w-auto" />
     </div>
    </div>
   </div>
 
 <div class="flex flex-col h-full p-4">
   <div class="space-y-4">
-    {#each data.passwords as secret}
+    {#each data.passwords as secret (secret.id)}
     <Secret {...secret} />
     {/each}
   </div>

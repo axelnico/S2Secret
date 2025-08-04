@@ -1,9 +1,11 @@
 <script lang="ts">
+    import { invoke } from "@tauri-apps/api/core";
+
 
     interface Secret {
         id: string;
         title: string;
-        userName?: string;
+        user_name?: string;
         site?: string;
         password: string;
         notes?: string;
@@ -20,11 +22,15 @@
     let secret_modification = $state<Secret>({
         id: secret?.id || "",
         title: secret?.title || "",
-        userName: secret?.userName || "",
+        userName: secret?.user_name || "",
         site: secret?.site || "",
         password: secret?.password || "",
         notes: secret?.notes || ""
     });
+
+    let password = $derived.by(async () => {
+        return secret_modification ? await invoke<string>("reveal_password", { secretId: secret_modification.id }) : "";  
+    })
 
 </script>
 
@@ -93,10 +99,12 @@
             type="password" 
             id="password" 
             name="password"
+            autocorrect="off"
             autocapitalize="off"
             autocomplete="off"
             required
-            placeholder="********" 
+            maxlength="128"
+            placeholder="************" 
             class="input input-secondary w-full"
             bind:value={secret_modification.password}
           />

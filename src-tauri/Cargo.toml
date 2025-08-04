@@ -31,7 +31,7 @@ secrecy = "0.10.3"
 tokio = { version = "1.39.3", features = ["full"] }
 reqwest-middleware = { version = "0.4.1", features= ["json"] }
 async-trait = "0.1"
-sharks = { git = "https://github.com/axelnico/sharks.git"}
+sharks = { git = "https://github.com/axelnico/sharks.git", branch = "proactive-secret-sharing"}
 base64 = "0.22.1"
 aes-gcm = "0.10.3"
 ciborium = "0.2.2"

@@ -66,7 +66,8 @@
               id="password" 
               name="password" 
               required
-              placeholder="********" 
+              minlength="12"
+              placeholder="************" 
               class="input input-secondary w-full"
               bind:value={masterPassword}
             />

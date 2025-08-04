@@ -4196,7 +4196,7 @@ dependencies = [
 [[package]]
 name = "sharks"
 version = "0.5.0"
-source = "git+https://github.com/axelnico/sharks.git#de11e2c211e24b524c0894db6a30b735e82389d8"
+source = "git+https://github.com/axelnico/sharks.git?branch=proactive-secret-sharing#49102898eef250e303006768771ce91e84aed377"
 dependencies = [
  "hashbrown 0.9.1",
  "rand 0.8.5",

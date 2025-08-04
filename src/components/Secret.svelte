@@ -3,12 +3,15 @@
     import { invoke } from "@tauri-apps/api/core";
     import SecretDeleteForm from "./SecretDeleteForm.svelte";
     import SecretForm from "./SecretForm.svelte";
+    import SecretProactiveProtection from "./SecretProactiveProtection.svelte";
 
     let secret = $props();
 
     let deleteModalOpen = $state(false);
 
     let editSecretModalOpen = $state(false);
+
+    let proactiveProtectionModalOpen = $state(false);
 
     let passwordVisible = $state(false);
 
@@ -134,7 +137,7 @@
         </button>
       </div>
       <div class="flex justify-end">
-        <button aria-label="proactive-protection" class="p-2 bg-transparent border-none text-success hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={() => {}}>
+        <button aria-label="proactive-protection" class="p-2 bg-transparent border-none text-success hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={() => {proactiveProtectionModalOpen = true}}>
           <svg fill="currentColor" width="25" height="25" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
   
             <g id="Change_password">
@@ -184,3 +187,9 @@
     isOpened={editSecretModalOpen} 
     onClose={() => editSecretModalOpen = false} 
     onSave={update_secret} />
+
+  <SecretProactiveProtection
+    secret_id={secret.id}
+    isOpened={proactiveProtectionModalOpen}
+    onClose={() => proactiveProtectionModalOpen = false}
+  />
