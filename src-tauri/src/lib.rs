@@ -22,7 +22,7 @@ use aes_gcm::{
 };
 use aes_gcm::aead::generic_array::typenum::U12;
 use uuid::Uuid;
-use sqlx::{sqlite::SqliteConnectOptions,SqlitePool,SqliteTransaction};
+use sqlx::{sqlite::{SqliteConnectOptions, UpdateHookResult},SqlitePool,SqliteTransaction};
 use chrono::{NaiveDateTime, Utc};
 use sqlx::Row;
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -167,6 +167,12 @@ struct SecretUpsertRequest {
     site: Option<Vec<u8>>,
     notes: Option<Vec<u8>>,
     server_share: Vec<u8>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ShareRenewal {
+    share: Vec<u8>,
+    updated_at: NaiveDateTime
 }
 
 #[derive(Deserialize, Serialize)]
@@ -472,6 +478,54 @@ async fn reveal_password(
     recover_password(&state, &secret_id).await
 }
 
+async fn share_renewal_for_secret(
+    state: &S2SecretData,
+    secret_id: &Uuid,
+) -> Result<String, ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let row = sqlx::query("SELECT client_share, data_encryption_key, updated_at FROM secret WHERE id = ?")
+        .bind(secret_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    let data_encryption_key: Vec<u8> = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), row.get(1)).map_err(|_| ())?;
+    let client_share = decrypt(&data_encryption_key, row.get(0)).map_err(|_| ())?;  
+    let mut client_share = Share::try_from(client_share.as_slice()).map_err(|_| ())?;
+    let sharks = Sharks(2);
+    let client_renewal_shares: Vec<Share> = sharks.proactive_dealer(&client_share).take(2).collect();
+    let mut buffer = Vec::new();
+    let client_share_renewal_request = ShareRenewal {
+        share: Vec::from(&client_renewal_shares[1]),
+        updated_at: NaiveDateTime::from_timestamp(row.get(2), 0),
+    };
+    ciborium::ser::into_writer(&client_share_renewal_request,&mut buffer).map_err(|_| ())?;
+    let server_share_renewal_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/renew-share", &secret_id))
+        .body(buffer)
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if server_share_renewal_response.status() != 200 {
+        return Err(());
+    } else {
+        let response_bytes = server_share_renewal_response.bytes().await.map_err(|_| ())?;
+        let server_share_renewal_response: ShareRenewal = ciborium::de::from_reader(response_bytes.as_ref()).map_err(|_| ())?;
+        let renewal_share_from_server = Share::try_from(server_share_renewal_response.share.as_slice()).map_err(|_| ())?;
+        client_share.renew([&renewal_share_from_server,&client_renewal_shares[0]]).ok();
+        update_local_share_on_renewal(&state, &secret_id, &client_share, server_share_renewal_response.updated_at).await?;
+        Ok("Secret share renewed successfully".to_string())
+    }
+}
+
+#[tauri::command]
+async fn renew_share(
+    state: State<'_, Mutex<S2SecretData>>,
+    secret_id: Uuid,
+) -> Result<String, ()> {
+    let state = state.lock().await;
+    share_renewal_for_secret(&state, &secret_id).await
+}
+
 #[tauri::command]
 async fn copy_password(
     app_handle: tauri::AppHandle,
@@ -509,9 +563,49 @@ async fn store_local_share(
     Ok(())
 }
 
+async fn update_local_share_on_renewal(
+    state: &S2SecretData,
+    secret_id: &uuid::Uuid,
+    share: &Share,
+    updated_at: NaiveDateTime,
+) -> Result<(), ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let data_encryption_key = sqlx::query("SELECT data_encryption_key FROM secret WHERE id = ?")
+        .bind(secret_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    let data_encryption_key: Vec<u8> = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), data_encryption_key.get(0)).map_err(|_| ())?;
+    let encrypted_share = encrypt(&data_encryption_key, &Vec::from(share)).map_err(|_| ())?;
+    sqlx::query("UPDATE secret SET client_share = ?, updated_at = ? WHERE id = ?")
+        .bind(encrypted_share)
+        .bind(updated_at.timestamp())
+        .bind(secret_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    Ok(())
+}
+
+async fn delete_local_share(
+    state: &S2SecretData,
+    secret_id: &uuid::Uuid,
+) -> Result<(), ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    sqlx::query("DELETE FROM secret WHERE id = ?")
+        .bind(secret_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn delete_secret(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -> Result<String, ()> {
     let mut state = state.lock().await;
+    delete_local_share(&state, &secret_id).await.map_err(|_| ())?;
     let delete_secret_response = state.http_client.delete(format!("http://localhost:3000/secrets/{}", &secret_id))
         .send()
         .await
@@ -580,14 +674,14 @@ async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2SecretData>>) ->
 async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_name: String, password: String, site: String, notes: String) -> Result<String, ()> {
     let state = state.lock().await;
     let password_key = state.password_encryption_key.expose_secret().as_ref().unwrap();
-    let (shares, padding_characters_count) = secret_padded_shares(&password);
+    let (mut shares, padding_characters_count) = secret_padded_shares(&password);
     let mut buffer = Vec::new();
 
     let new_secret_request = build_secret_upsert_request(
         password_key,
         title,
         user_name,
-        &shares[0],
+        &shares[1],
         site,
         notes,
     ).await?;
@@ -602,10 +696,11 @@ async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_n
     } else {
         let add_secret_response_bytes = add_secret_response.bytes().await.map_err(|_| ())?;
         let add_secret_id_response: UpsertSecretResponse = ciborium::de::from_reader(add_secret_response_bytes.as_ref()).map_err(|_| ())?;
-        if let Err(_) = store_local_share(&state, &add_secret_id_response.id_secret ,&shares[1], padding_characters_count).await {
+        if let Err(_) = store_local_share(&state, &add_secret_id_response.id_secret ,&shares[0], padding_characters_count).await {
             return Err(());
         }
     }
+    shares.zeroize();
     Ok("Secret added successfully".to_string())
 }
 
@@ -642,6 +737,24 @@ async fn build_secret_upsert_request(
         server_share: Vec::from(server_share),
     })
 }
+
+#[tauri::command]
+async fn disable_proactive_protection(
+    state: State<'_, Mutex<S2SecretData>>,
+    secret_id: Uuid,
+) -> Result<(), ()> {
+    let state = state.lock().await;
+    let protection_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/disable-proactive-protection", secret_id))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if protection_response.status() != 204 {
+        return Err(());
+    } else {
+        Ok(())
+    }
+}
+
 
 #[tauri::command]
 async fn enable_proactive_protection(
@@ -681,7 +794,7 @@ async fn update_secret(state: State<'_, Mutex<S2SecretData>>, id: Uuid, title: S
         password_key,
         title,
         user_name,
-        &shares[0],
+        &shares[1],
         site,
         notes,
     ).await?;
@@ -696,7 +809,7 @@ async fn update_secret(state: State<'_, Mutex<S2SecretData>>, id: Uuid, title: S
     } else {
         let update_secret_response_bytes = update_secret_response.bytes().await.map_err(|_| ())?;
         let update_secret_id_response: UpsertSecretResponse = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
-        if let Err(_) = store_local_share(&state, &update_secret_id_response.id_secret ,&shares[1], padding_characters_count).await {
+        if let Err(_) = store_local_share(&state, &update_secret_id_response.id_secret ,&shares[0], padding_characters_count).await {
             return Err(());
         }
     }
@@ -727,6 +840,7 @@ pub fn run() {
             reveal_password,
             copy_password,
             enable_proactive_protection,
+            renew_share,
             create_client_data])
         .run(tauri::generate_context!())
         .expect("error while running S2Secret application");

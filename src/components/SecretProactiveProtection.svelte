@@ -35,6 +35,12 @@
             secretId: secret_id,
             proactiveProtectionSelected: getProtectionLevelText(protectionLevel)
         });
+        await invoke("renew_share", { secretId: secret_id });
+        onClose();
+    }
+
+    async function removeProactiveProtection() {
+        await invoke("disable_proactive_protection", { secretId: secret_id });
         onClose();
     }
 
@@ -63,7 +69,8 @@
     <span>Every 1 day</span>
   </div>
 </div>
-    <div class="modal-action">
+    <div class="modal-action flex">
+      <button class="btn btn-error" onclick={removeProactiveProtection}>Remove protection</button>
       <form method="dialog">
         <button class="btn" onclick={() => onClose()}>Cancel</button>
       </form>
