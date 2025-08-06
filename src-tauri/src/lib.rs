@@ -66,6 +66,7 @@ struct Password {
     password: Option<String>, // TODO: Remove this field, it should not be stored in the passwords map
     share_updated_at: NaiveDateTime,
     next_share_update: Option<NaiveDateTime>,
+    proactive_protection: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -193,6 +194,7 @@ struct Secret {
     notes: Option<Vec<u8>>,
     share_updated_at: NaiveDateTime,
     next_share_update: Option<NaiveDateTime>,
+    proactive_protection: Option<String>,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -625,6 +627,71 @@ async fn passwords(state: State<'_, Mutex<S2SecretData>>) -> Result<Vec<Password
 }
 
 #[tauri::command]
+async fn renew_shares(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
+    let mut state = state.lock().await;
+    for (secret_id, password) in &state.passwords {
+        if let Some(next_share_update) = password.next_share_update {
+            if next_share_update <= Utc::now().naive_utc() {
+                //if let Err(_) = share_renewal_for_secret(&state, secret_id).await {
+                //    return Err(());
+                //}
+            }
+        }
+    }
+    Ok("Shares renewed successfully".to_string())
+}
+
+#[tauri::command]
+async fn load_secret_descriptive_data(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -> Result<String, ()> {
+    let mut state = state.lock().await;
+    let secret_response = state.http_client.get(format!("http://localhost:3000/secrets/{}", secret_id))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if secret_response.status() != 200 {
+        return Err(());
+    }
+    else {
+        let secret_response_bytes = secret_response.bytes().await.map_err(|_| ())?;
+        let secret: Secret = ciborium::de::from_reader(secret_response_bytes.as_ref()).map_err(|_| ())?;
+        let decrypted_password = secret_descriptive_data(&state, &secret)?;
+        state.passwords.insert(secret.id_secret, decrypted_password);
+        Ok("Secret descriptive data loaded successfully".to_string())
+    }
+}
+
+fn secret_descriptive_data(state: &S2SecretData, secret: &Secret) -> Result<Password, ()> {
+    let decrypted_title = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &secret.title).map_err(|_| ())?;
+    let title = String::from_utf8(decrypted_title).map_err(|_| ())?;
+    let mut user_name: Option<String> = None;
+    let mut site: Option<String> = None;
+    let mut notes: Option<String> = None;
+    if let Some(user_name_encrypted) = &secret.user_name {
+        let user_name_decrypted = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &user_name_encrypted).map_err(|_| ())?;
+        user_name = Some(String::from_utf8(user_name_decrypted).map_err(|_| ())?);
+    }
+    if let Some(site_encrypted) = &secret.site {
+        let decrypted_site = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &site_encrypted).map_err(|_| ())?;
+        site = Some(String::from_utf8(decrypted_site).map_err(|_| ())?);
+    }
+    if let Some(notes_encrypted) = &secret.notes {
+        let decrypted_notes = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &notes_encrypted).map_err(|_| ())?;
+        notes = Some(String::from_utf8(decrypted_notes).map_err(|_| ())?);
+    }
+    Ok(Password {
+        id: secret.id_secret,
+        title,
+        user_name,
+        site,
+        notes,
+        share_updated_at: secret.share_updated_at,
+        next_share_update: secret.next_share_update,
+        proactive_protection: secret.proactive_protection.clone(),
+        password: None, // TODO: Remove. Passwords are not loaded here, only descriptive data
+    })
+}
+
+#[tauri::command]
 async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
     let secrets_response = state.http_client.get(format!("http://localhost:3000/secrets"))
@@ -638,33 +705,8 @@ async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2SecretData>>) ->
         let secrets_response_bytes = secrets_response.bytes().await.map_err(|_| ())?;
         let secrets: Vec<Secret> = ciborium::de::from_reader(secrets_response_bytes.as_ref()).map_err(|_| ())?;
         for secret in secrets {
-            let decrypted_title = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &secret.title).map_err(|_| ())?;
-            let title = String::from_utf8(decrypted_title).map_err(|_| ())?;
-            let mut user_name: Option<String> = None;
-            let mut site: Option<String> = None;
-            let mut notes: Option<String> = None;
-            if let Some(user_name_encrypted) = secret.user_name {
-                let user_name_decrypted = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &user_name_encrypted).map_err(|_| ())?;
-                user_name = Some(String::from_utf8(user_name_decrypted).map_err(|_| ())?);
-            }
-            if let Some(site_encrypted) = secret.site {
-                let decrypted_site = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &site_encrypted).map_err(|_| ())?;
-                site = Some(String::from_utf8(decrypted_site).map_err(|_| ())?);
-            }
-            if let Some(notes_encrypted) = secret.notes {
-                let decrypted_notes = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &notes_encrypted).map_err(|_| ())?;
-                notes = Some(String::from_utf8(decrypted_notes).map_err(|_| ())?);
-            }
-            state.passwords.insert(secret.id_secret, Password {
-                    id: secret.id_secret,
-                    title,
-                    user_name,
-                    site,
-                    notes,
-                    share_updated_at: secret.share_updated_at,
-                    next_share_update: secret.next_share_update,
-                    password: None, // TODO: Remove. Passwords are not loaded here, only descriptive data
-                });
+            let decrypted_password = secret_descriptive_data(&state, &secret)?;
+            state.passwords.insert(secret.id_secret, decrypted_password);
         }
         Ok("Load secrets descriptive data successfully".to_string())
     }
@@ -837,9 +879,12 @@ pub fn run() {
             passwords,
             filter_by_search_term,
             load_secrets_descriptive_data,
+            load_secret_descriptive_data,
             reveal_password,
             copy_password,
             enable_proactive_protection,
+            disable_proactive_protection,
+            renew_shares,
             renew_share,
             create_client_data])
         .run(tauri::generate_context!())

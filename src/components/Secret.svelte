@@ -190,6 +190,8 @@
 
   <SecretProactiveProtection
     secret_id={secret.id}
+    protection_level={secret.proactive_protection}
     isOpened={proactiveProtectionModalOpen}
+    next_update={secret.next_share_update}
     onClose={() => proactiveProtectionModalOpen = false}
   />
