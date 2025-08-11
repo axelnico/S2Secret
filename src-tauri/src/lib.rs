@@ -12,13 +12,14 @@ use opaque_ke::{CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientLog
 use rand::{rngs::OsRng, Rng};
 use rand::RngCore;
 use argon2::Argon2;
+use argon2::password_hash::{SaltString, PasswordHasher};
 use tauri::{Builder, Manager};
 use reqwest_middleware::{Middleware, Next, ClientBuilder, Result as MiddlewareResult};
 use reqwest::{Request, Response, Client, StatusCode};
 use tauri::http::Extensions;
 use base64::prelude::*;
 use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit}, aes::Aes256, Aes256Gcm, Key, Nonce
+    aead::{consts::U800, Aead, AeadCore, KeyInit}, aes::Aes256, Aes256Gcm, Key, Nonce
 };
 use aes_gcm::aead::generic_array::typenum::U12;
 use uuid::Uuid;
@@ -26,7 +27,8 @@ use sqlx::{sqlite::{SqliteConnectOptions, UpdateHookResult},SqlitePool,SqliteTra
 use chrono::{NaiveDateTime, Utc};
 use sqlx::Row;
 use tauri_plugin_clipboard_manager::ClipboardExt;
-
+use hmac_sha512::HMAC;
+use bincode::{config, enc, Decode, Encode};
 
 
 fn decrypt_using_nonce(key: &[u8], ciphertext: &[u8], nonce: &[u8]) -> Result<Vec<u8>, ()> {
@@ -50,6 +52,20 @@ pub struct SecretShare {
     server_share: Vec<u8>,
     created_at: NaiveDateTime,
     updated_at: NaiveDateTime,
+}
+
+#[derive(Serialize)]
+struct EmergencyAccessRequest {
+    id_emergency_contact: Uuid,
+    server_ticket: Vec<u8>,
+    server_v: Vec<u8>,
+    server_a: Vec<u8>
+}
+
+#[derive(Deserialize, Serialize, Encode, Decode)]
+pub struct Ticket {
+    pub password_hash: String,
+    pub encrypted_secret: Vec<u8>,
 }
 
 struct SecureSessionMiddleware {
@@ -162,6 +178,11 @@ struct UpsertSecretResponse {
 }
 
 #[derive(Serialize,Deserialize)]
+struct EmergencyContactUpsertResponse {
+    id_emergency_contact: Uuid
+}
+
+#[derive(Serialize,Deserialize)]
 struct SecretUpsertRequest {
     title: Vec<u8>,
     user_name: Option<Vec<u8>>,
@@ -169,6 +190,16 @@ struct SecretUpsertRequest {
     notes: Option<Vec<u8>>,
     server_share: Vec<u8>,
 }
+
+
+#[derive(Deserialize, Serialize)]
+pub struct EmergencyContactRequest {
+    email: String,
+    description: Option<String>,
+    server_key_file : Vec<u8>,
+    server_share: Vec<u8>,
+}
+
 
 #[derive(Deserialize, Serialize)]
 pub struct ShareRenewal {
@@ -275,6 +306,14 @@ async fn create_client_data(state: State<'_, Mutex<S2SecretData>>) -> Result<Str
         .await
         .map_err(|_| ())?;
     sqlx::query("CREATE TABLE IF NOT EXISTS secret (id TEXT PRIMARY KEY, client_share BLOB NOT NULL, client_share_padding BLOB NOT NULL, data_encryption_key BLOB NOT NULL, updated_at INTEGER NOT NULL, user_id TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES user(id));")
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS emergency_contact (id TEXT PRIMARY KEY, client_share BLOB NOT NULL, data_encryption_key BLOB NOT NULL, password_salt BLOB NOT NULL, user_id TEXT NOT NULL, FOREIGN KEY(user_id) REFERENCES user(id));")
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS emergency_contact_access (id_emergency_contact TEXT NOT NULL, id_secret TEXT NOT NULL, data_encryption_key BLOB NOT NULL, ticket_share BLOB NOT NULL, v_share BLOB NOT NULL, a_share BLOB NOT NULL, a BLOB NOT NULL, PRIMARY KEY(id_emergency_contact, id_secret), FOREIGN KEY(id_emergency_contact) REFERENCES emergency_contact(id), FOREIGN KEY(id_secret) REFERENCES secret(id));")
         .execute(&mut *transaction)
         .await
         .map_err(|_| ())?;
@@ -528,6 +567,47 @@ async fn renew_share(
     share_renewal_for_secret(&state, &secret_id).await
 }
 
+async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid,) -> Result<(), ()> {
+    let mut v = [0u8; 64];
+    OsRng.fill_bytes(&mut v);
+    let mut a = [0u8; 64];
+    OsRng.fill_bytes(&mut a);
+    let password = b"hunter42"; // Bad password; don't actually use!
+    let mysecret = b"my secret";
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let password_hash = argon2.hash_password(password, &salt).ok().unwrap().to_string();
+    let mut encryption_key_for_secret = [0u8; 32];
+    Argon2::default().hash_password_into(password, &v, &mut encryption_key_for_secret).ok().unwrap();
+    let encrypted_secret = encrypt(&encryption_key_for_secret, mysecret).map_err(|_| ())?;
+    let ticket = Ticket {
+        password_hash: password_hash,
+        encrypted_secret,
+    };
+    let sharks = Sharks(2);
+    let config = config::standard();
+    let encoded_ticket: Vec<u8> = bincode::encode_to_vec(&ticket, config).unwrap();
+    let ticket_shares: Vec<Share> = sharks.dealer(encoded_ticket.as_slice()).take(2).collect();
+    let a_shares = sharks.dealer(a.as_slice()).take(2).collect::<Vec<Share>>();
+    let v_shares = sharks.dealer(v.as_slice()).take(2).collect::<Vec<Share>>();
+    let mut buffer = Vec::new();
+    let emergency_access_request = EmergencyAccessRequest {
+        id_emergency_contact: id_emergency_contact,
+        server_ticket: Vec::from(&ticket_shares[1]),
+        server_v: Vec::from(&v_shares[1]),
+        server_a: Vec::from(&a_shares[1]),
+    };
+    ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
+    let state = state.lock().await;
+    let login_initial_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/emergency-contacts", secret_id))
+        .body(buffer)
+        .send()
+        .await
+        .map_err(|_| ())?;
+
+   Ok(())
+}
+
 #[tauri::command]
 async fn copy_password(
     app_handle: tauri::AppHandle,
@@ -537,6 +617,86 @@ async fn copy_password(
     let state = state.lock().await;
     let password = recover_password(&state, &secret_id).await?;
     app_handle.clipboard().write_text(password).unwrap();
+    Ok(())
+}
+
+async fn store_local_emergency_contact_share(
+    state: &S2SecretData,
+    emergency_contact_id: &uuid::Uuid,
+    share: &Share,
+) -> Result<(),()> {
+    let data_encryption_key = Aes256Gcm::generate_key(OsRng);
+    let password_salt = SaltString::generate(&mut OsRng);
+    let encrypted_share = encrypt(data_encryption_key.as_ref(), &Vec::from(share)).map_err(|_| ())?;
+    let encrypted_password_salt = encrypt(data_encryption_key.as_ref(), password_salt.as_str().as_bytes().as_ref()).map_err(|_| ())?;
+    let encrypted_data_encryption_key = encrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), data_encryption_key.as_ref()).map_err(|_| ())?;
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    sqlx::query("INSERT INTO emergency_contact (id, client_share, data_encryption_key, password_salt, user_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET client_share = excluded.client_share, data_encryption_key = excluded.data_encryption_key, password_salt = excluded.password_salt")
+        .bind(emergency_contact_id.to_string())
+        .bind(encrypted_share)
+        .bind(encrypted_data_encryption_key)
+        .bind(encrypted_password_salt)
+        .bind(state.user_id.unwrap_or_default().to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    Ok(())
+}
+
+async fn password_salt_of_emergency_contact(state: &S2SecretData, emergency_contact_id: &uuid::Uuid) -> Result<String, ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let emergency_contact_row = sqlx::query("SELECT password_salt, data_encryption_key FROM emergency_contact WHERE id = ?")
+        .bind(emergency_contact_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    let data_encryption_key = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), emergency_contact_row.get(1)).map_err(|_| ())?;
+    let password_salt = decrypt(data_encryption_key.as_ref(), emergency_contact_row.get(0)).map_err(|_| ())?;
+    Ok(SaltString::from_b64(String::from_utf8(password_salt).map_err(|_| ())?.as_str()).map_err(|_| ())?.as_str().to_owned())
+}
+
+async fn data_encryption_key_for_secret(state: &S2SecretData, secret_id: &uuid::Uuid) -> Result<[u8; 32], ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let data_encryption_key = sqlx::query("SELECT data_encryption_key FROM secret WHERE id = ?")
+        .bind(secret_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    let data_encryption_key = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), data_encryption_key.get(0)).map_err(|_| ())?;
+    Ok(data_encryption_key[..32].try_into().map_err(|_| ())?)
+}
+
+async fn store_local_emergency_access_data(
+    state: &S2SecretData,
+    emergency_contact_id: &uuid::Uuid,
+    secret_id: &uuid::Uuid,
+    ticket_share: &Share,
+    v_share: &Share,
+    a_share: &Share,
+    a: &Vec<u8>
+) -> Result<(),()> {
+    let mut encryption_key_for_emergency_access = [0u8; 32];
+    let password = b"hunter42";
+    let password_salt = password_salt_of_emergency_contact(&state, &emergency_contact_id).await?;
+    Argon2::default().hash_password_into(password, &password_salt.as_bytes(), &mut encryption_key_for_emergency_access).ok().unwrap();
+    let data_encryption_key = data_encryption_key_for_secret(&state, &secret_id).await?;
+    let encrypted_data_encryption_key = encrypt(encryption_key_for_emergency_access.as_ref(), data_encryption_key.as_ref()).map_err(|_| ())?;
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    sqlx::query("INSERT INTO emergency_contact_access (id_emergency_contact, id_secret, data_encryption_key, ticket_share, v_share, a_share, a) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id_emergency_contact, id_secret) DO UPDATE SET data_encryption_key = excluded.data_encryption_key, ticket_share = excluded.ticket_share, v_share = excluded.v_share, a_share = excluded.a_share, a = excluded.a")
+        .bind(emergency_contact_id.to_string())
+        .bind(secret_id.to_string())
+        .bind(encrypted_data_encryption_key)
+        .bind(Vec::from(ticket_share))
+        .bind(Vec::from(v_share))
+        .bind(Vec::from(a_share))
+        .bind(a)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
     Ok(())
 }
 
@@ -797,6 +957,40 @@ async fn disable_proactive_protection(
     }
 }
 
+#[tauri::command]
+async fn add_emergency_contact(
+    state: State<'_, Mutex<S2SecretData>>,
+    secret_id: Uuid,
+    email: String,
+    password: String,
+    description: Option<String>
+) -> Result<(), ()> {
+    let mut server_key_file = [0u8; 32];
+    OsRng.fill_bytes(&mut server_key_file);
+    let sharks = Sharks(2);
+    let password_shares = sharks.dealer(password.as_bytes()).take(2).collect::<Vec<Share>>();
+    let state = state.lock().await;
+    let mut buffer = Vec::new();
+    ciborium::ser::into_writer(&EmergencyContactRequest {
+        email,
+        description,
+        server_key_file: Vec::from(&server_key_file),
+        server_share: Vec::from(&password_shares[1])
+    }, &mut buffer).map_err(|_| ())?;
+    let contact_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/emergency-contacts", secret_id))
+        .body(buffer)
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if contact_response.status() != 201 {
+        return Err(());
+    } else {
+        let add_emergency_contact_response_bytes = contact_response.bytes().await.map_err(|_| ())?;
+        let add_emergency_contact_response: EmergencyContactUpsertResponse = ciborium::de::from_reader(add_emergency_contact_response_bytes.as_ref()).map_err(|_| ())?;
+        store_local_emergency_contact_share(&state, &add_emergency_contact_response.id_emergency_contact, &password_shares[0]).await?;
+        Ok(())
+    }
+}
 
 #[tauri::command]
 async fn enable_proactive_protection(
@@ -884,6 +1078,7 @@ pub fn run() {
             copy_password,
             enable_proactive_protection,
             disable_proactive_protection,
+            add_emergency_contact,
             renew_shares,
             renew_share,
             create_client_data])
