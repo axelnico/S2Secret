@@ -3,16 +3,20 @@
 
   import { invoke } from "@tauri-apps/api/core";
   import { goto } from "$app/navigation";
+  import { preLoginData } from "../state/login.svelte";
 
   let email = $state("");
   let masterPassword = $state("");
 
   async function login() {
-      const login_response = await invoke("login", { email, masterPassword });
-      const is_authenticated = await invoke<boolean>("is_authenticated");
-      if (is_authenticated) {
-        goto("/secrets", { replaceState: true });
-      }
+      const temporalSessionId = await invoke("login", { email, masterPassword }) as string;
+      
+       preLoginData.email = email;
+       preLoginData.temporalSessionId = temporalSessionId;
+      goto("/2fa", {replaceState: true })
+        //if (is_authenticated) {
+      //  goto("/secrets", { replaceState: true });
+      //}
     }
 </script>
 
@@ -56,9 +60,17 @@
             bind:value={masterPassword}
           />
         </div>
+
+        <!-- Database Input -->
+        <div class="form-control">
+          <label class="label" for="email">
+            <span class="label-text">Database file</span>
+          </label>
+          <input type="file" class="file-input file-input-secondary file-input-md" />
+        </div>
         
         <!-- Submit Button -->
-        <div class="form-control mt-6">
+        <div class="form-control mt-6 pt-6">
           <button 
             type="submit" 
             class="btn btn-primary w-full"

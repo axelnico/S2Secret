@@ -20,6 +20,7 @@
   <div class="container mx-auto">
     <div class="flex place-content-center">
       <div class="w-full max-w-sm p-6 bg-base-100 rounded-lg shadow-lg">
+        <img src="/s2secret-full-logo.svg" alt="S2Secret Logo"/>
         <h2 class="text-2xl font-bold text-center mb-6">Registration</h2>
         
         <!-- Form -->

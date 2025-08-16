@@ -193,6 +193,12 @@ struct SecretUpsertRequest {
 
 
 #[derive(Deserialize, Serialize)]
+struct OneTimeSecretCodeRequest {
+    email: String,
+    secret_code: String,
+}
+
+#[derive(Deserialize, Serialize)]
 pub struct EmergencyContactRequest {
     email: String,
     description: Option<String>,
@@ -368,6 +374,7 @@ async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     .await
     .map_err(|_| ())?;
     state.session_id = None;
+    state.http_client = reqwest_middleware::ClientWithMiddleware::default();
     //let http_client = reqwest::Client::new();
     //#if let Some(session_id) = state.session_id {
     //    http_client.post("http://localhost:3000/auth/user/logout")
@@ -388,7 +395,7 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
     let login_request_bytes = client_login_start_result.message;
     let http_client = reqwest::Client::new();
     let mut buffer = Vec::new();
-    let login_initial_request = LoginInitialRequest {
+    let login_initial_request: LoginInitialRequest = LoginInitialRequest {
         email: email.clone(),
         message: login_request_bytes.clone(),
     };
@@ -424,19 +431,12 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
     if client_final_response.status() != 200 {
         return Err(());
     }
-    let session_id = client_final_response.headers().get("session-id").unwrap().clone();
+    //let session_id = client_final_response.headers().get("session-id").unwrap().clone();
     let mut state = state.lock().await;
-    state.session_id = Some(uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap());
+    //state.session_id = Some(uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap());
     state.session_key = SecretBox::new(Box::new(Some(client_login_finish_result.session_key.to_vec())));
     state.password_encryption_key = SecretBox::new(Box::new(Some(client_login_finish_result.export_key.to_vec())));
-    let http_client = Client::builder().build().unwrap();
-    state.http_client = ClientBuilder::new(http_client)
-    .with(SecureSessionMiddleware {
-        session_id: uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap(),
-        session_key: SecretBox::new(Box::new(client_login_finish_result.session_key.to_vec()))
-    })
-    .build();
-    Ok("User login successfully".to_string())
+    Ok(temp_session_id.to_str().map_err(|_| ())?.to_string())
 }
 
 fn encrypt(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, ()> {
@@ -559,6 +559,33 @@ async fn share_renewal_for_secret(
 }
 
 #[tauri::command]
+async fn send_2fa_secret_code(state: State<'_, Mutex<S2SecretData>>, email: String, one_time_secret_code: String, temporal_session_id: String) -> Result<(), ()> {
+    let mut state = state.lock().await;
+    let mut buffer = Vec::new();
+    let one_time_secret_code_request = OneTimeSecretCodeRequest { email, secret_code: one_time_secret_code };
+    ciborium::ser::into_writer(&one_time_secret_code_request, &mut buffer).map_err(|_| ())?;
+    let two_factor_response = state.http_client.post("http://localhost:3000/auth/user/2fa")
+        .body(buffer)
+        .header("session-id", &temporal_session_id)
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if two_factor_response.status() != 200 {
+        return Err(());
+    }
+    let session_id = two_factor_response.headers().get("session-id").unwrap().clone();
+    state.session_id = Some(uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap());
+    let http_client = Client::builder().build().unwrap();
+    state.http_client = ClientBuilder::new(http_client)
+    .with(SecureSessionMiddleware {
+        session_id: uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap(),
+        session_key: SecretBox::new(Box::new(state.session_key.expose_secret().as_ref().unwrap().clone()))
+    })
+    .build();
+    Ok(())
+}
+
+#[tauri::command]
 async fn renew_share(
     state: State<'_, Mutex<S2SecretData>>,
     secret_id: Uuid,
@@ -604,7 +631,6 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
         .send()
         .await
         .map_err(|_| ())?;
-
    Ok(())
 }
 
@@ -1075,6 +1101,7 @@ pub fn run() {
             load_secrets_descriptive_data,
             load_secret_descriptive_data,
             reveal_password,
+            send_2fa_secret_code,
             copy_password,
             enable_proactive_protection,
             disable_proactive_protection,

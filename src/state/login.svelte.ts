@@ -1,0 +1,1 @@
+export const preLoginData = $state({email:"", temporalSessionId:""});
