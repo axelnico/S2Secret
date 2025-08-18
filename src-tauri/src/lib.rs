@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::DerefMut};
+use std::{collections::HashMap, ops::DerefMut, path::Path};
 
 use coset::{CborSerializable, CoseEncrypt0, CoseEncrypt0Builder, HeaderBuilder};
 use secrecy::{zeroize::Zeroize, ExposeSecret, ExposeSecretMut, SecretBox};
@@ -29,6 +29,7 @@ use sqlx::Row;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use hmac_sha512::HMAC;
 use bincode::{config, enc, Decode, Encode};
+use tauri_plugin_dialog::DialogExt;
 
 
 fn decrypt_using_nonce(key: &[u8], ciphertext: &[u8], nonce: &[u8]) -> Result<Vec<u8>, ()> {
@@ -60,6 +61,11 @@ struct EmergencyAccessRequest {
     server_ticket: Vec<u8>,
     server_v: Vec<u8>,
     server_a: Vec<u8>
+}
+
+#[derive(Serialize,Deserialize)]
+struct S2SecretUserUpsertResponse {
+    id_user: Uuid
 }
 
 #[derive(Deserialize, Serialize, Encode, Decode)]
@@ -250,7 +256,8 @@ struct UserRegistrationFinishResult {
 
 
 #[tauri::command]
-async fn register_user(email: String, name: String, master_password: String) -> Result<String, ()> {
+async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_handle: tauri::AppHandle,email: String, name: String, master_password: String) -> Result<String, ()> {
+    let mut state = state.lock().await;
     let mut client_rng = OsRng;
     let client_registration_start_result = ClientRegistration::<DefaultCipherSuite>::start(&mut client_rng, master_password.as_bytes()).unwrap();
     let registration_request_bytes = client_registration_start_result.message;
@@ -286,10 +293,14 @@ async fn register_user(email: String, name: String, master_password: String) -> 
         .send()
         .await
         .map_err(|_| ())?;
-    if registration_final_response.status() != 200 {
+    if registration_final_response.status() != 201 {
         return Err(());
+    } else {
+        let registration_final_response_bytes = registration_final_response.bytes().await.map_err(|_| ())?;
+        let new_user_id_response: S2SecretUserUpsertResponse = ciborium::de::from_reader(registration_final_response_bytes.as_ref()).map_err(|_| ())?;
+        create_client_data(&mut state, &app_handle, &new_user_id_response.id_user).await?;
+        Ok("User registered successfully".to_string())
     }
-    Ok("User registered successfully".to_string())
 }
 
 #[tauri::command]
@@ -298,12 +309,12 @@ async fn is_authenticated(state: State<'_, Mutex<S2SecretData>>) -> Result<bool,
     Ok(state.session_id.is_some())
 }
 
-#[tauri::command]
-async fn create_client_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
-   let mut state = state.lock().await;
-   state.client_local_data_path = "/tmp/s2secret.sqlite".to_string();
+async fn create_client_data(state: &mut S2SecretData,app_handle: &tauri::AppHandle, user_id: &Uuid) -> Result<String, ()> {
+   let file_path = app_handle.dialog().file().set_file_name("s2secret.sqlite").add_filter("SQLite", &["sqlite"]).blocking_save_file().unwrap();
+   let file_path = file_path.as_path().unwrap();
+   state.client_local_data_path = file_path.to_str().unwrap().to_string();
    let client_db_connection_options = SqliteConnectOptions::new()
-        .filename(&state.client_local_data_path)
+        .filename(file_path)
         .create_if_missing(true);
     let client_db_pool = SqlitePool::connect_with(client_db_connection_options).await.map_err(|_| ())?;
     let mut transaction = client_db_pool.begin().await.map_err(|_| ())?;
@@ -326,7 +337,7 @@ async fn create_client_data(state: State<'_, Mutex<S2SecretData>>) -> Result<Str
     let mut client_key_file = [0u8; 32];
     OsRng.fill_bytes(&mut client_key_file);
     sqlx::query("INSERT INTO user (id, client_key_file) VALUES (?, ?) ON CONFLICT(id) DO NOTHING;")
-        .bind(state.user_id.unwrap_or_default().to_string())
+        .bind(user_id.to_string())
         .bind(client_key_file.to_vec())
         .execute(&mut *transaction)
         .await
@@ -387,6 +398,19 @@ async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     Ok("User logged out successfully".to_string())
 }
 
+
+#[tauri::command]
+async fn select_database_file(state: State<'_, Mutex<S2SecretData>>, app_handle: tauri::AppHandle) -> Result<String, ()> {
+    let mut state = state.lock().await;
+    let file_path = app_handle.dialog().file().add_filter("SQLite", &["sqlite"]).blocking_pick_file();
+    
+    if let Some(path) = file_path {
+        state.client_local_data_path = path.as_path().unwrap().to_str().unwrap().to_string();
+        Ok(state.client_local_data_path.clone())
+    } else {
+        Err(())
+    }
+}
 
 #[tauri::command]
 async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_password: String) -> Result<String, ()> {
@@ -1088,6 +1112,7 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![login,register_user,
             is_authenticated,
             logout, 
@@ -1103,12 +1128,13 @@ pub fn run() {
             reveal_password,
             send_2fa_secret_code,
             copy_password,
+            select_database_file,
             enable_proactive_protection,
             disable_proactive_protection,
             add_emergency_contact,
             renew_shares,
-            renew_share,
-            create_client_data])
+            renew_share
+            ])
         .run(tauri::generate_context!())
         .expect("error while running S2Secret application");
 }

@@ -10,7 +10,8 @@
   
     async function register() {
       const register_response = await invoke("register_user", { email, name, masterPassword });
-      console.log(register_response);
+      goto("/", {replaceState: true })
+    
     }
     function cancel() {
       goto("/", { replaceState: true });

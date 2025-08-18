@@ -11,9 +11,6 @@
   const email = preLoginData.email;
   const temporalSessionId = preLoginData.temporalSessionId;
 
-  console.log("Email:", email);
-  console.log("Temporal Session ID:", temporalSessionId);
-
   async function login() {
 
       await invoke<boolean>("send_2fa_secret_code", { oneTimeSecretCode, email, temporalSessionId });

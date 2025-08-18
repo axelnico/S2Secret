@@ -7,6 +7,5 @@ export async function load() {
         return redirect(303, '/');
     } else {
         await invoke("logged_user_data");
-        await invoke("create_client_data");
     }
 }

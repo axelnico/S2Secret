@@ -7,12 +7,18 @@
 
   let email = $state("");
   let masterPassword = $state("");
+  let databaseFilePath = $state("");
+
+  async function selectDatabaseFile() {
+    const selectedFile = await invoke("select_database_file") as string;
+    databaseFilePath = selectedFile;
+  }
 
   async function login() {
-      const temporalSessionId = await invoke("login", { email, masterPassword }) as string;
-      
-       preLoginData.email = email;
-       preLoginData.temporalSessionId = temporalSessionId;
+      const temporalSessionId = await invoke("login", { email, masterPassword}) as string;
+
+      preLoginData.email = email;
+      preLoginData.temporalSessionId = temporalSessionId;
       goto("/2fa", {replaceState: true })
         //if (is_authenticated) {
       //  goto("/secrets", { replaceState: true });
@@ -66,11 +72,24 @@
           <label class="label" for="email">
             <span class="label-text">Database file</span>
           </label>
-          <input type="file" class="file-input file-input-secondary file-input-md" />
+          <input type="button"
+                onclick={selectDatabaseFile}
+                 id="database_file"
+                 name="database_file"
+                 class="btn input-secondary"
+                 required
+                 placeholder="Select database file"
+                 bind:value={databaseFilePath}
+          />
         </div>
+
+        <!-- <div class="join">
+           <input class="input input-secondary join-item" required placeholder="database" />
+           <button class="btn input-secondary join-item">Choose</button>
+        </div> -->
         
         <!-- Submit Button -->
-        <div class="form-control mt-6 pt-6">
+        <div class="form-control mt-6 pt-4">
           <button 
             type="submit" 
             class="btn btn-primary w-full"
