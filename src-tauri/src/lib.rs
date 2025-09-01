@@ -157,6 +157,7 @@ struct S2SecretData {
     http_client: reqwest_middleware::ClientWithMiddleware,
     client_local_data_path: String,
     passwords: HashMap<Uuid, Password>,
+    emergency_contacts: HashMap<Uuid, EmergencyContact>,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -211,6 +212,16 @@ pub struct EmergencyContactRequest {
     server_key_file : Vec<u8>,
     server_share: Vec<u8>,
 }
+
+#[derive(Clone,Deserialize, Serialize)]
+pub struct EmergencyContact {
+    id_emergency_contact: Uuid,
+    email: String,
+    description: Option<String>,
+    server_key_file : Vec<u8>,
+    server_share: Vec<u8>,
+}
+
 
 
 #[derive(Deserialize, Serialize)]
@@ -814,6 +825,25 @@ async fn delete_local_share(
     Ok(())
 }
 
+async fn delete_local_emergency_contact(
+    state: &S2SecretData,
+    emergency_contact_id: &uuid::Uuid,
+) -> Result<(), ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    sqlx::query("DELETE FROM emergency_contact_access WHERE id_emergency_contact = ?")
+        .bind(emergency_contact_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    sqlx::query("DELETE FROM emergency_contact WHERE id = ?")
+        .bind(emergency_contact_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn delete_secret(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -> Result<String, ()> {
     let mut state = state.lock().await;
@@ -831,9 +861,31 @@ async fn delete_secret(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -
 }
 
 #[tauri::command]
+async fn delete_emergency_contact(state: State<'_, Mutex<S2SecretData>>, emergency_contact_id: Uuid) -> Result<String, ()> {
+    let mut state = state.lock().await;
+    delete_local_emergency_contact(&state, &emergency_contact_id).await.map_err(|_| ())?;
+    let delete_emergency_contact_response = state.http_client.delete(format!("http://localhost:3000/user/emergency-contacts/{}", &emergency_contact_id))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if delete_emergency_contact_response.status() != 204 {
+        return Err(());
+    } else {
+        state.emergency_contacts.remove(&emergency_contact_id);
+        Ok("Emergency contact deleted successfully".to_string())
+    }
+}
+
+#[tauri::command]
 async fn passwords(state: State<'_, Mutex<S2SecretData>>) -> Result<Vec<Password>, ()> {
     let state = state.lock().await;
     Ok(state.passwords.values().cloned().collect())
+}
+
+#[tauri::command]
+async fn emergency_contacts(state: State<'_, Mutex<S2SecretData>>) -> Result<Vec<EmergencyContact>, ()> {
+    let state = state.lock().await;
+    Ok(state.emergency_contacts.values().cloned().collect())
 }
 
 #[tauri::command]
@@ -869,6 +921,9 @@ async fn load_secret_descriptive_data(state: State<'_, Mutex<S2SecretData>>, sec
         Ok("Secret descriptive data loaded successfully".to_string())
     }
 }
+
+
+
 
 fn secret_descriptive_data(state: &S2SecretData, secret: &Secret) -> Result<Password, ()> {
     let decrypted_title = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &secret.title).map_err(|_| ())?;
@@ -919,6 +974,25 @@ async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2SecretData>>) ->
             state.passwords.insert(secret.id_secret, decrypted_password);
         }
         Ok("Load secrets descriptive data successfully".to_string())
+    }
+}
+
+#[tauri::command]
+async fn load_emergency_contacts(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
+    let mut state = state.lock().await;
+    let emergency_contacts_response = state.http_client.get(format!("http://localhost:3000/user/emergency-contacts"))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if emergency_contacts_response.status() != 200 {
+        return Err(());
+    } else {
+        let emergency_contacts_response_bytes = emergency_contacts_response.bytes().await.map_err(|_| ())?;
+        let emergency_contacts: Vec<EmergencyContact> = ciborium::de::from_reader(emergency_contacts_response_bytes.as_ref()).map_err(|_| ())?;
+        for contact in emergency_contacts {
+            state.emergency_contacts.insert(contact.id_emergency_contact, contact);
+        }
+        Ok("Load emergency contacts successfully".to_string())
     }
 }
 
@@ -1010,7 +1084,6 @@ async fn disable_proactive_protection(
 #[tauri::command]
 async fn add_emergency_contact(
     state: State<'_, Mutex<S2SecretData>>,
-    secret_id: Uuid,
     email: String,
     password: String,
     description: Option<String>
@@ -1027,7 +1100,7 @@ async fn add_emergency_contact(
         server_key_file: Vec::from(&server_key_file),
         server_share: Vec::from(&password_shares[1])
     }, &mut buffer).map_err(|_| ())?;
-    let contact_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/emergency-contacts", secret_id))
+    let contact_response = state.http_client.post("http://localhost:3000/user/emergency-contacts")
         .body(buffer)
         .send()
         .await
@@ -1118,13 +1191,16 @@ pub fn run() {
             logout, 
             add_secret,
             update_secret,
-            delete_secret, 
+            delete_secret,
+            delete_emergency_contact,
             logged_user_data,
             user_name,
             passwords,
             filter_by_search_term,
             load_secrets_descriptive_data,
             load_secret_descriptive_data,
+            load_emergency_contacts,
+            emergency_contacts,
             reveal_password,
             send_2fa_secret_code,
             copy_password,
