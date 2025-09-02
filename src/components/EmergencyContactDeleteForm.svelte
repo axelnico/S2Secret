@@ -1,6 +1,7 @@
 <script lang="ts">
 
     import { invoke } from "@tauri-apps/api/core";
+    import { setEmergencyContacts } from "../state/emergency-access.svelte";
 
     let {emergencyContactId, emergencyEmail, isOpened, onClose } = $props();
 
@@ -10,6 +11,7 @@
 
     async function delete_emergency_contact() {
       const emergency_contact_deletion_response = await invoke("delete_emergency_contact", { emergencyContactId:emergencyContactId });
+      setEmergencyContacts(await invoke("emergency_contacts"));
       onClose();
 }
 </script>

@@ -4,13 +4,14 @@
 
     import EmergencyContact from "../../../components/EmergencyContact.svelte";
     import EmergencyContactForm from "../../../components/EmergencyContactForm.svelte";
+    import { emergencyAccess, setEmergencyContacts } from "../../../state/emergency-access.svelte";
 
     interface EmergencyContactProps {
         data: EmergencyContactList;
     }
 
     interface EmergencyContactList {
-        emergency_contacts: EmergencyContactUpsert[];
+        emergencyContacts: EmergencyContactUpsert[];
     }
 
     interface EmergencyContactUpsert {
@@ -22,10 +23,13 @@
 
     let {data} : EmergencyContactProps = $props();
 
+    setEmergencyContacts(data.emergencyContacts);
+
     let newEmergencyContactModalOpen = $state(false);
 
     async function create_emergency_contact(new_contact: EmergencyContactUpsert) {
       const contact_creation_response = await invoke("add_emergency_contact", { ...new_contact });
+      setEmergencyContacts(await invoke("emergency_contacts"));
       newEmergencyContactModalOpen = false;
     }
 
@@ -39,7 +43,7 @@
 
 <div class="flex flex-col h-full p-4">
   <div class="space-y-4">
-    {#each data.emergency_contacts as contact (contact.id_emergency_contact)}
+    {#each emergencyAccess.contacts as contact (contact.id_emergency_contact)}
     <EmergencyContact {...contact} />
     {/each}
   </div>

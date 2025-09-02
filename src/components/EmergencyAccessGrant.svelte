@@ -1,10 +1,12 @@
 <script lang="ts">
 
     import { invoke } from "@tauri-apps/api/core";
+    import { emergencyAccess } from "../state/emergency-access.svelte";
 
     let {secretId, secretTitle, isOpened, onClose } = $props();
+    
 
-    let emergencyContacts = $state([{id:"5D03127A-EF34-4DBF-8C26-2B73986F8890", email:"test@example.com"}]);
+    //let emergencyContacts = $state([{id:"5D03127A-EF34-4DBF-8C26-2B73986F8890", email:"test@example.com"}]);
 
 </script>
 
@@ -21,8 +23,8 @@
             </label>
           <select class="select select-secondary">
             <option disabled selected>Pick an emergency contact</option>
-            {#each emergencyContacts as contact}
-              <option value={contact.id}>{contact.email}</option>
+            {#each emergencyAccess.contacts as contact}
+              <option value={contact.id_emergency_contact}>{contact.email}</option>
             {/each}
           </select>
         </div>

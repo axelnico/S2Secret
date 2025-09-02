@@ -5,6 +5,7 @@
     import SecretForm from "./SecretForm.svelte";
     import SecretProactiveProtection from "./SecretProactiveProtection.svelte";
     import EmergencyAccessGrant from "./EmergencyAccessGrant.svelte";
+    import { setPasswords } from "../state/secrets.svelte";
 
     let secret = $props();
 
@@ -44,6 +45,7 @@
 
     async function update_secret(secret_updated: SecretUpsert) {
       const secret_creation_response = await invoke("update_secret", { ...secret_updated });
+      setPasswords(await invoke("passwords"));
       editSecretModalOpen = false;
     }
 </script>

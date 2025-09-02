@@ -3,13 +3,21 @@
     import { invoke } from "@tauri-apps/api/core";
     import Secret from "../../../components/Secret.svelte";
     import SecretForm from "../../../components/SecretForm.svelte";
+    import { secrets, setPasswords } from "../../../state/secrets.svelte";
+    import { setEmergencyContacts } from "../../../state/emergency-access.svelte";
 
-    interface SecretListProps {
-        data: SecretList;
+    interface SecureItemListProps {
+        data: SecureItemList;
+    }
+    interface EmergencyContactUpsert {
+      id_emergency_contact: string;
+      email: string;
+      description: string;
     }
 
-    interface SecretList {
+    interface SecureItemList {
         passwords: SecretUpsert[];
+        emergencyContacts: EmergencyContactUpsert[];
     }
 
     interface SecretUpsert {
@@ -21,7 +29,10 @@
         notes?: string;
     };
 
-    let {data} : SecretListProps = $props();
+    let {data} : SecureItemListProps = $props();
+
+    setPasswords(data.passwords);
+    setEmergencyContacts(data.emergencyContacts);
 
     let newSecretModalOpen = $state(false);
 
@@ -33,9 +44,9 @@
     async function searchSecrets(term: string) {
       console.log("Searching for:", term);
       if (term.length >= 3) {
-        data = { passwords: await invoke("filter_by_search_term", { term }) };
+        setPasswords(await invoke("filter_by_search_term", { term }));
       } else {
-        data = { passwords: await invoke("passwords") };
+        setPasswords(await invoke("passwords"));
       }
     }
 
@@ -54,7 +65,7 @@
 
 <div class="flex flex-col h-full p-4">
   <div class="space-y-4">
-    {#each data.passwords as secret (secret.id)}
+    {#each secrets.passwords as secret (secret.id)}
     <Secret {...secret} />
     {/each}
   </div>

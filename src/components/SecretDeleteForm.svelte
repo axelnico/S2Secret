@@ -1,6 +1,7 @@
 <script lang="ts">
 
     import { invoke } from "@tauri-apps/api/core";
+    import { setPasswords } from "../state/secrets.svelte";
 
     let {secretId, secretTitle, isOpened, onClose } = $props();
 
@@ -10,6 +11,7 @@
 
     async function delete_secret() {
       const secret_deletion_response = await invoke("delete_secret", { secretId: secretId });
+      setPasswords(await invoke("passwords"));
       onClose();
 }
 </script>
