@@ -998,7 +998,7 @@ async fn load_emergency_contacts(state: State<'_, Mutex<S2SecretData>>) -> Resul
 
 #[tauri::command]
 async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_name: String, password: String, site: String, notes: String) -> Result<String, ()> {
-    let state = state.lock().await;
+    let mut state = state.lock().await;
     let password_key = state.password_encryption_key.expose_secret().as_ref().unwrap();
     let (mut shares, padding_characters_count) = secret_padded_shares(&password);
     let mut buffer = Vec::new();
@@ -1021,10 +1021,12 @@ async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_n
         return Err(());
     } else {
         let add_secret_response_bytes = add_secret_response.bytes().await.map_err(|_| ())?;
-        let add_secret_id_response: UpsertSecretResponse = ciborium::de::from_reader(add_secret_response_bytes.as_ref()).map_err(|_| ())?;
-        if let Err(_) = store_local_share(&state, &add_secret_id_response.id_secret ,&shares[0], padding_characters_count).await {
+        let added_secret: Secret = ciborium::de::from_reader(add_secret_response_bytes.as_ref()).map_err(|_| ())?;
+        if let Err(_) = store_local_share(&state, &added_secret.id_secret ,&shares[0], padding_characters_count).await {
             return Err(());
         }
+        let decrypted_password = secret_descriptive_data(&state, &added_secret)?;
+        state.passwords.insert(added_secret.id_secret, decrypted_password);
     }
     shares.zeroize();
     Ok("Secret added successfully".to_string())
@@ -1069,14 +1071,18 @@ async fn disable_proactive_protection(
     state: State<'_, Mutex<S2SecretData>>,
     secret_id: Uuid,
 ) -> Result<(), ()> {
-    let state = state.lock().await;
+    let mut state = state.lock().await;
     let protection_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/disable-proactive-protection", secret_id))
         .send()
         .await
         .map_err(|_| ())?;
-    if protection_response.status() != 204 {
+    if protection_response.status() != 200 {
         return Err(());
     } else {
+        let update_secret_response_bytes = protection_response.bytes().await.map_err(|_| ())?;
+        let updated_secret: Secret = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
+        let decrypted_password = secret_descriptive_data(&state, &updated_secret)?;
+        state.passwords.insert(updated_secret.id_secret, decrypted_password);
         Ok(())
     }
 }
@@ -1092,7 +1098,7 @@ async fn add_emergency_contact(
     OsRng.fill_bytes(&mut server_key_file);
     let sharks = Sharks(2);
     let password_shares = sharks.dealer(password.as_bytes()).take(2).collect::<Vec<Share>>();
-    let state = state.lock().await;
+    let mut state = state.lock().await;
     let mut buffer = Vec::new();
     ciborium::ser::into_writer(&EmergencyContactRequest {
         email,
@@ -1109,8 +1115,9 @@ async fn add_emergency_contact(
         return Err(());
     } else {
         let add_emergency_contact_response_bytes = contact_response.bytes().await.map_err(|_| ())?;
-        let add_emergency_contact_response: EmergencyContactUpsertResponse = ciborium::de::from_reader(add_emergency_contact_response_bytes.as_ref()).map_err(|_| ())?;
-        store_local_emergency_contact_share(&state, &add_emergency_contact_response.id_emergency_contact, &password_shares[0]).await?;
+        let added_emergency_contact: EmergencyContact = ciborium::de::from_reader(add_emergency_contact_response_bytes.as_ref()).map_err(|_| ())?;
+        store_local_emergency_contact_share(&state, &added_emergency_contact.id_emergency_contact, &password_shares[0]).await?;
+        state.emergency_contacts.insert(added_emergency_contact.id_emergency_contact, added_emergency_contact);
         Ok(())
     }
 }
@@ -1127,7 +1134,7 @@ async fn enable_proactive_protection(
         "Extreme" => ProactiveProtection::Extreme,
         _ => return Err(()),
     };
-    let state = state.lock().await;
+    let mut state = state.lock().await;
     let mut buffer = Vec::new();
     ciborium::ser::into_writer(&proactive_protection,&mut buffer).map_err(|_| ())?;
     let protection_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/enable-proactive-protection", secret_id))
@@ -1135,16 +1142,20 @@ async fn enable_proactive_protection(
         .send()
         .await
         .map_err(|_| ())?;
-    if protection_response.status() != 204 {
+    if protection_response.status() != 200 {
         return Err(());
     } else {
+        let update_secret_response_bytes = protection_response.bytes().await.map_err(|_| ())?;
+        let updated_secret: Secret = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
+        let decrypted_password = secret_descriptive_data(&state, &updated_secret)?;
+        state.passwords.insert(updated_secret.id_secret, decrypted_password);
         Ok(())
     }
 }
 
 #[tauri::command]
 async fn update_secret(state: State<'_, Mutex<S2SecretData>>, id: Uuid, title: String, user_name: String, password: String, site: String, notes: String) -> Result<String, ()> {
-    let state = state.lock().await;
+    let mut state = state.lock().await;
     let password_key = state.password_encryption_key.expose_secret().as_ref().unwrap();
     let (shares, padding_characters_count) = secret_padded_shares(&password);
     let mut buffer = Vec::new();
@@ -1167,10 +1178,12 @@ async fn update_secret(state: State<'_, Mutex<S2SecretData>>, id: Uuid, title: S
         return Err(());
     } else {
         let update_secret_response_bytes = update_secret_response.bytes().await.map_err(|_| ())?;
-        let update_secret_id_response: UpsertSecretResponse = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
-        if let Err(_) = store_local_share(&state, &update_secret_id_response.id_secret ,&shares[0], padding_characters_count).await {
+        let updated_secret: Secret = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
+        if let Err(_) = store_local_share(&state, &updated_secret.id_secret ,&shares[0], padding_characters_count).await {
             return Err(());
         }
+        let decrypted_password = secret_descriptive_data(&state, &updated_secret)?;
+        state.passwords.insert(updated_secret.id_secret, decrypted_password);
     }
     Ok("Secret updated successfully".to_string())
 }

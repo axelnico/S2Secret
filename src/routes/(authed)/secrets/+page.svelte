@@ -38,6 +38,7 @@
 
     async function create_secret(new_secret: SecretUpsert) {
       const secret_creation_response = await invoke("add_secret", { ...new_secret });
+      setPasswords(await invoke("passwords"));
       newSecretModalOpen = false;
     }
 
