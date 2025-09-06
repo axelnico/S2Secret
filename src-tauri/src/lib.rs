@@ -496,6 +496,23 @@ fn decrypt(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, ()> {
     cipher.decrypt(nonce, &ciphertext[12..]).map_err(|_| ())
 }
 
+async fn recover_emergency_contact_password(state: &S2SecretData,emergency_contact_id: &Uuid) -> Result<Vec<u8>, ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let row = sqlx::query("SELECT client_share, data_encryption_key FROM emergency_contact WHERE id = ?")
+        .bind(emergency_contact_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    let data_encryption_key: Vec<u8> = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), row.get(1)).map_err(|_| ())?;
+    let client_share = decrypt(&data_encryption_key, row.get(0)).map_err(|_| ())?;  
+    let client_share = Share::try_from(client_share.as_slice()).map_err(|_| ())?;
+    let server_share = Share::try_from(state.emergency_contacts.get(emergency_contact_id).unwrap().server_share.as_slice()).map_err(|_| ())?;
+    let mut shares = vec![client_share, server_share];
+    let sharks = Sharks(2);
+    Ok(sharks.recover(shares.as_slice()).unwrap_or_default())
+}
+
 async fn recover_password(
     state: &S2SecretData,
     secret_id: &Uuid,
@@ -629,18 +646,21 @@ async fn renew_share(
     share_renewal_for_secret(&state, &secret_id).await
 }
 
-async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid,) -> Result<(), ()> {
+#[tauri::command]
+async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid) -> Result<(), ()> {
+    let state = state.lock().await;
     let mut v = [0u8; 64];
     OsRng.fill_bytes(&mut v);
     let mut a = [0u8; 64];
     OsRng.fill_bytes(&mut a);
-    let password = b"hunter42"; // Bad password; don't actually use!
+    let password = recover_emergency_contact_password(&state, &id_emergency_contact).await.unwrap(); // Bad password; don't actually use!
     let mysecret = b"my secret";
-    let salt = SaltString::generate(&mut OsRng);
+    let salt = password_salt_of_emergency_contact(&state, &id_emergency_contact).await.unwrap();
+    let salt = SaltString::from_b64(&salt).unwrap();
     let argon2 = Argon2::default();
-    let password_hash = argon2.hash_password(password, &salt).ok().unwrap().to_string();
+    let password_hash = argon2.hash_password(password.as_ref(), &salt).ok().unwrap().to_string();
     let mut encryption_key_for_secret = [0u8; 32];
-    Argon2::default().hash_password_into(password, &v, &mut encryption_key_for_secret).ok().unwrap();
+    Argon2::default().hash_password_into(password.as_ref(), &v, &mut encryption_key_for_secret).ok().unwrap();
     let encrypted_secret = encrypt(&encryption_key_for_secret, mysecret).map_err(|_| ())?;
     let ticket = Ticket {
         password_hash: password_hash,
@@ -660,13 +680,17 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
         server_a: Vec::from(&a_shares[1]),
     };
     ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
-    let state = state.lock().await;
-    let login_initial_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/emergency-contacts", secret_id))
+    let emergency_access_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/emergency-contacts", secret_id))
         .body(buffer)
         .send()
         .await
         .map_err(|_| ())?;
-   Ok(())
+    if emergency_access_response.status() != 204 {
+        return Err(());
+    } else {
+        store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a).await?;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -687,7 +711,7 @@ async fn store_local_emergency_contact_share(
     share: &Share,
 ) -> Result<(),()> {
     let data_encryption_key = Aes256Gcm::generate_key(OsRng);
-    let password_salt = SaltString::generate(&mut OsRng);
+    let password_salt: SaltString = SaltString::generate(&mut OsRng);
     let encrypted_share = encrypt(data_encryption_key.as_ref(), &Vec::from(share)).map_err(|_| ())?;
     let encrypted_password_salt = encrypt(data_encryption_key.as_ref(), password_salt.as_str().as_bytes().as_ref()).map_err(|_| ())?;
     let encrypted_data_encryption_key = encrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), data_encryption_key.as_ref()).map_err(|_| ())?;
@@ -737,7 +761,7 @@ async fn store_local_emergency_access_data(
     ticket_share: &Share,
     v_share: &Share,
     a_share: &Share,
-    a: &Vec<u8>
+    a: &[u8; 64]
 ) -> Result<(),()> {
     let mut encryption_key_for_emergency_access = [0u8; 32];
     let password = b"hunter42";
@@ -753,7 +777,7 @@ async fn store_local_emergency_access_data(
         .bind(Vec::from(ticket_share))
         .bind(Vec::from(v_share))
         .bind(Vec::from(a_share))
-        .bind(a)
+        .bind(&a[..])
         .execute(&mut *transaction)
         .await
         .map_err(|_| ())?;
@@ -1221,6 +1245,7 @@ pub fn run() {
             enable_proactive_protection,
             disable_proactive_protection,
             add_emergency_contact,
+            add_access_to_emergency_contact_for_secret,
             renew_shares,
             renew_share
             ])

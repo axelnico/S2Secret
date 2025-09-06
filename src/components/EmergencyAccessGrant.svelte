@@ -4,8 +4,9 @@
     import { emergencyAccess } from "../state/emergency-access.svelte";
 
     let {secretId, secretTitle, isOpened, onClose } = $props();
-    
 
+    let selectedContactId = $state(null);
+    
     //let emergencyContacts = $state([{id:"5D03127A-EF34-4DBF-8C26-2B73986F8890", email:"test@example.com"}]);
 
 </script>
@@ -21,7 +22,7 @@
           <label class="label" for="username">
               <span class="label-text">Contact</span>
             </label>
-          <select class="select select-secondary">
+          <select bind:value={selectedContactId} class="select select-secondary">
             <option disabled selected>Pick an emergency contact</option>
             {#each emergencyAccess.contacts as contact}
               <option value={contact.id_emergency_contact}>{contact.email}</option>
@@ -42,7 +43,7 @@
       <form method="dialog">
         <button onclick={onClose} class="btn">Cancel</button>
       </form>
-      <button class="btn btn-primary" onclick={() => {}}>Share secret</button>
+      <button class="btn btn-primary" onclick={async () => {await invoke("add_access_to_emergency_contact_for_secret", { idEmergencyContact: selectedContactId, secretId: secretId })}}>Share secret</button>
     </div>
   </div>
 </dialog>
