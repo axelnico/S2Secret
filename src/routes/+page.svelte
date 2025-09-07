@@ -102,6 +102,7 @@
       <!-- Extra Links -->
       <div class="text-center mt-4 text-sm">
         <p>Don't have an account? <a href="/sign-up" class="text-primary hover:underline">Sign up</a></p>
+        <p class="py-3"><a href="/emergency-access" class="text-error hover:underline">Emergency Access</a></p>
       </div>
     </div>
   </div>

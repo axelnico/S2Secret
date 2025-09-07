@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use sharks::{Sharks, Share};
 use tauri::{http::{self, HeaderName, HeaderValue}, State};
 use tauri_plugin_shell::open::Program;
+use std::fs::File;
+use std::io::prelude::*;
 use tokio::sync::Mutex;
 use tauri_plugin_http::reqwest;
 use opaque_ke::{CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientLoginFinishResult, ClientRegistration, ClientRegistrationFinishParameters, CredentialFinalization, CredentialRequest, CredentialResponse, RegistrationRequest, RegistrationResponse, RegistrationUpload};
@@ -222,7 +224,16 @@ pub struct EmergencyContact {
     server_share: Vec<u8>,
 }
 
-
+#[derive(Clone,Deserialize, Serialize)]
+pub struct EmergencyContactFileAccess {
+    id_emergency_contact: Uuid,
+    id_secret: Uuid,
+    data_encryption_key: Vec<u8>,
+    ticket_share: Vec<u8>,
+    v_share: Vec<u8>,
+    a_share: Vec<u8>,
+    a: Vec<u8>,
+}
 
 #[derive(Deserialize, Serialize)]
 pub struct ShareRenewal {
@@ -409,6 +420,18 @@ async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     Ok("User logged out successfully".to_string())
 }
 
+
+#[tauri::command]
+async fn select_emergency_file(state: State<'_, Mutex<S2SecretData>>, app_handle: tauri::AppHandle) -> Result<String, ()> {
+    let state = state.lock().await;
+    let file_path = app_handle.dialog().file().add_filter("CBOR", &["cbor"]).blocking_pick_file();
+
+    if let Some(path) = file_path {
+        Ok(path.as_path().unwrap().to_str().unwrap().to_string())
+    } else {
+        Err(())
+    }
+}
 
 #[tauri::command]
 async fn select_database_file(state: State<'_, Mutex<S2SecretData>>, app_handle: tauri::AppHandle) -> Result<String, ()> {
@@ -647,7 +670,12 @@ async fn renew_share(
 }
 
 #[tauri::command]
-async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid) -> Result<(), ()> {
+async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: String, password: String) -> Result<(), ()> {
+    Ok(())
+}
+
+#[tauri::command]
+async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid, app_handle: tauri::AppHandle) -> Result<(), ()> {
     let state = state.lock().await;
     let mut v = [0u8; 64];
     OsRng.fill_bytes(&mut v);
@@ -688,7 +716,21 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
     if emergency_access_response.status() != 204 {
         return Err(());
     } else {
-        store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a).await?;
+        let encrypted_data_encryption_key = store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a).await?;
+        let mut save_emergency_file_buffer = Vec::new();
+        let emergency_contact_file_access = EmergencyContactFileAccess {
+            id_emergency_contact,
+            id_secret: secret_id,
+            data_encryption_key: encrypted_data_encryption_key,
+            ticket_share: Vec::from(&ticket_shares[0]),
+            v_share: Vec::from(&v_shares[0]),
+            a_share: Vec::from(&a_shares[0]),
+            a: Vec::from(&a),
+        };
+        ciborium::ser::into_writer(&emergency_contact_file_access,&mut save_emergency_file_buffer).map_err(|_| ())?;
+        let emergency_file_path = app_handle.dialog().file().set_file_name("emergency_access.cbor").add_filter("CBOR", &["cbor"]).blocking_save_file().unwrap();
+        let mut emergency_file = File::create(emergency_file_path.as_path().unwrap()).map_err(|_| ())?;
+        emergency_file.write_all(save_emergency_file_buffer.as_slice()).map_err(|_| ())?;
         Ok(())
     }
 }
@@ -762,7 +804,7 @@ async fn store_local_emergency_access_data(
     v_share: &Share,
     a_share: &Share,
     a: &[u8; 64]
-) -> Result<(),()> {
+) -> Result<Vec<u8>,()> {
     let mut encryption_key_for_emergency_access = [0u8; 32];
     let password = b"hunter42";
     let password_salt = password_salt_of_emergency_contact(&state, &emergency_contact_id).await?;
@@ -773,7 +815,7 @@ async fn store_local_emergency_access_data(
     sqlx::query("INSERT INTO emergency_contact_access (id_emergency_contact, id_secret, data_encryption_key, ticket_share, v_share, a_share, a) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id_emergency_contact, id_secret) DO UPDATE SET data_encryption_key = excluded.data_encryption_key, ticket_share = excluded.ticket_share, v_share = excluded.v_share, a_share = excluded.a_share, a = excluded.a")
         .bind(emergency_contact_id.to_string())
         .bind(secret_id.to_string())
-        .bind(encrypted_data_encryption_key)
+        .bind(&encrypted_data_encryption_key)
         .bind(Vec::from(ticket_share))
         .bind(Vec::from(v_share))
         .bind(Vec::from(a_share))
@@ -782,7 +824,7 @@ async fn store_local_emergency_access_data(
         .await
         .map_err(|_| ())?;
     transaction.commit().await.map_err(|_| ())?;
-    Ok(())
+    Ok(encrypted_data_encryption_key)
 }
 
 async fn store_local_share(
@@ -1242,12 +1284,14 @@ pub fn run() {
             send_2fa_secret_code,
             copy_password,
             select_database_file,
+            select_emergency_file,
             enable_proactive_protection,
             disable_proactive_protection,
             add_emergency_contact,
             add_access_to_emergency_contact_for_secret,
             renew_shares,
-            renew_share
+            renew_share,
+            recover_secret
             ])
         .run(tauri::generate_context!())
         .expect("error while running S2Secret application");
