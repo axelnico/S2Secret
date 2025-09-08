@@ -66,7 +66,6 @@
               id="password" 
               name="password" 
               required
-              minlength="12"
               placeholder="************" 
               class="input input-secondary w-full"
               bind:value={emergencyContactPassword}

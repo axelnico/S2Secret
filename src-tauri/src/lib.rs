@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::DerefMut, path::Path};
+use std::{collections::HashMap, fs, ops::DerefMut, path::Path};
 
 use coset::{CborSerializable, CoseEncrypt0, CoseEncrypt0Builder, HeaderBuilder};
 use secrecy::{zeroize::Zeroize, ExposeSecret, ExposeSecretMut, SecretBox};
@@ -200,6 +200,16 @@ struct SecretUpsertRequest {
     server_share: Vec<u8>,
 }
 
+#[derive(Deserialize, Serialize)]
+pub struct EmergencyContactSecretAccessResponse {
+    title: Vec<u8>,
+    encrypted_secret: Vec<u8>,
+    user_name: Option<Vec<u8>>,
+    site: Option<Vec<u8>>,
+    notes: Option<Vec<u8>>,
+    server_key_file: Vec<u8>,
+    server_v: Vec<u8>,
+}
 
 #[derive(Deserialize, Serialize)]
 struct OneTimeSecretCodeRequest {
@@ -224,15 +234,24 @@ pub struct EmergencyContact {
     server_share: Vec<u8>,
 }
 
-#[derive(Clone,Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct EmergencyContactFileAccess {
     id_emergency_contact: Uuid,
     id_secret: Uuid,
+    password_salt: String,
     data_encryption_key: Vec<u8>,
     ticket_share: Vec<u8>,
     v_share: Vec<u8>,
     a_share: Vec<u8>,
     a: Vec<u8>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct EmergencyContactSecretAccessRequest {
+    password_hash: String,
+    contact_prover_mac: Vec<u8>,
+    contact_ticket_share: Vec<u8>,
+    contact_prover_mac_share: Vec<u8>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -671,7 +690,41 @@ async fn renew_share(
 
 #[tauri::command]
 async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: String, password: String) -> Result<(), ()> {
-    Ok(())
+    let file = fs::read(emergency_file).map_err(|_| ())?;
+    let emergency_access_data: EmergencyContactFileAccess = ciborium::de::from_reader(file.as_slice()).map_err(|_| ())?;
+    let argon2 = Argon2::default();
+    let password_hash = argon2.hash_password(password.as_ref(), &SaltString::from_b64(&emergency_access_data.password_salt).unwrap()).ok().unwrap().to_string();
+    let mac = HMAC::mac([password_hash.as_bytes(),emergency_access_data.ticket_share.as_slice()].concat(), emergency_access_data.a.as_slice());
+    let emergency_access_request = EmergencyContactSecretAccessRequest {
+        password_hash,
+        contact_prover_mac: mac.to_vec(),
+        contact_ticket_share: emergency_access_data.ticket_share,
+        contact_prover_mac_share: emergency_access_data.a_share,
+    };
+    let mut buffer = Vec::new();
+    ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
+    let http_client = reqwest::Client::new();
+    let emergency_access_response = http_client.post(format!("http://localhost:3000/auth/emergency-contacts/{}/secrets/{}",emergency_access_data.id_emergency_contact, emergency_access_data.id_secret))
+        .body(buffer)
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if emergency_access_response.status() != 200 {
+        return Err(());
+    } else {
+        let emergency_access_response_bytes = emergency_access_response.bytes().await.map_err(|_| ())?;
+        let recovered_secret: EmergencyContactSecretAccessResponse = ciborium::de::from_reader(emergency_access_response_bytes.as_ref()).map_err(|_| ())?;
+        let sharks = Sharks(2);
+        let contact_v_share = Share::try_from(emergency_access_data.v_share.as_slice()).map_err(|_| ())?;
+        let server_v_share = Share::try_from(recovered_secret.server_v.as_slice()).map_err(|_| ())?;
+        let v = sharks.recover([&contact_v_share, &server_v_share]).ok().unwrap_or_default();
+        let mut encryption_key_for_secret = [0u8; 32];
+        let mut encryption_key_for_secret_descriptive_data = [0u8; 32];
+        Argon2::default().hash_password_into(password.as_ref(), &v, &mut encryption_key_for_secret).ok().unwrap();
+        Argon2::default().hash_password_into(password.as_ref(), emergency_access_data.password_salt.as_bytes(), &mut encryption_key_for_secret_descriptive_data).ok().unwrap();
+
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -681,12 +734,11 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
     OsRng.fill_bytes(&mut v);
     let mut a = [0u8; 64];
     OsRng.fill_bytes(&mut a);
-    let password = recover_emergency_contact_password(&state, &id_emergency_contact).await.unwrap(); // Bad password; don't actually use!
-    let mysecret = b"my secret";
+    let password = recover_emergency_contact_password(&state, &id_emergency_contact).await.unwrap();
+    let mysecret = b"my secret"; // TODO: get the actual secret
     let salt = password_salt_of_emergency_contact(&state, &id_emergency_contact).await.unwrap();
-    let salt = SaltString::from_b64(&salt).unwrap();
     let argon2 = Argon2::default();
-    let password_hash = argon2.hash_password(password.as_ref(), &salt).ok().unwrap().to_string();
+    let password_hash = argon2.hash_password(password.as_ref(), &SaltString::from_b64(&salt).unwrap()).ok().unwrap().to_string();
     let mut encryption_key_for_secret = [0u8; 32];
     Argon2::default().hash_password_into(password.as_ref(), &v, &mut encryption_key_for_secret).ok().unwrap();
     let encrypted_secret = encrypt(&encryption_key_for_secret, mysecret).map_err(|_| ())?;
@@ -716,12 +768,13 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
     if emergency_access_response.status() != 204 {
         return Err(());
     } else {
-        let encrypted_data_encryption_key = store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a).await?;
+        let encrypted_data_encryption_key = store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a, &password).await?;
         let mut save_emergency_file_buffer = Vec::new();
         let emergency_contact_file_access = EmergencyContactFileAccess {
             id_emergency_contact,
             id_secret: secret_id,
             data_encryption_key: encrypted_data_encryption_key,
+            password_salt: salt,
             ticket_share: Vec::from(&ticket_shares[0]),
             v_share: Vec::from(&v_shares[0]),
             a_share: Vec::from(&a_shares[0]),
@@ -781,7 +834,7 @@ async fn password_salt_of_emergency_contact(state: &S2SecretData, emergency_cont
     transaction.commit().await.map_err(|_| ())?;
     let data_encryption_key = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), emergency_contact_row.get(1)).map_err(|_| ())?;
     let password_salt = decrypt(data_encryption_key.as_ref(), emergency_contact_row.get(0)).map_err(|_| ())?;
-    Ok(SaltString::from_b64(String::from_utf8(password_salt).map_err(|_| ())?.as_str()).map_err(|_| ())?.as_str().to_owned())
+    Ok(String::from_utf8(password_salt).map_err(|_| ())?)
 }
 
 async fn data_encryption_key_for_secret(state: &S2SecretData, secret_id: &uuid::Uuid) -> Result<[u8; 32], ()> {
@@ -803,12 +856,13 @@ async fn store_local_emergency_access_data(
     ticket_share: &Share,
     v_share: &Share,
     a_share: &Share,
-    a: &[u8; 64]
+    a: &[u8; 64],
+    password: &Vec<u8>
 ) -> Result<Vec<u8>,()> {
     let mut encryption_key_for_emergency_access = [0u8; 32];
-    let password = b"hunter42";
     let password_salt = password_salt_of_emergency_contact(&state, &emergency_contact_id).await?;
-    Argon2::default().hash_password_into(password, &password_salt.as_bytes(), &mut encryption_key_for_emergency_access).ok().unwrap();
+    // TODO: use v instead of password_salt to derive the encryption key as password salt is not secret and it is used for authentication
+    Argon2::default().hash_password_into(password.as_slice(), &password_salt.as_bytes(), &mut encryption_key_for_emergency_access).ok().unwrap();
     let data_encryption_key = data_encryption_key_for_secret(&state, &secret_id).await?;
     let encrypted_data_encryption_key = encrypt(encryption_key_for_emergency_access.as_ref(), data_encryption_key.as_ref()).map_err(|_| ())?;
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
