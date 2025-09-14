@@ -7,6 +7,16 @@
     let emergencyFilePath = $state("");
     let emergencyContactPassword = $state("");
 
+    let transientSecret = $state<TransientSecret | null>(null);
+
+    interface TransientSecret {
+        title: string;
+        userName?: string;
+        site?: string;
+        password: string;
+        notes?: string;
+    };
+
     async function selectEmergencyFile() {
         const selectedFile = await invoke("select_emergency_file") as string;
         emergencyFilePath = selectedFile;
@@ -16,15 +26,15 @@
         const result = await invoke("recover_secret", {
             emergencyFile: emergencyFilePath,
             password: emergencyContactPassword
-        }) as string;
+        }) as TransientSecret;
 
         if (result) {
-            // Handle successful recovery
+            transientSecret = result;
         } else {
             // Handle recovery failure
         }
 
-        goto("/", {replaceState: true })
+        //goto("/", {replaceState: true })
     }
     function cancel() {
       goto("/", { replaceState: true });
@@ -36,9 +46,31 @@
       <div class="w-full max-w-sm p-6 bg-base-100 rounded-lg shadow-lg">
         <img src="/s2secret-full-logo.svg" alt="S2Secret Logo"/>
         <h2 class="text-2xl font-bold text-center mb-6">Emergency Access</h2>
-        
-        <!-- Form -->
-        <form class="space-y-4" onsubmit={recoverSecret}>
+        {#if transientSecret}
+        <fieldset class="fieldset bg-base-200 border-base-300 rounded-box w-xs border p-4">
+          <legend class="fieldset-legend">Recovered secret</legend>
+
+          <h1>Title</h1>
+          <p>{transientSecret.title}</p>
+          <h1>Password</h1>
+          <p>{transientSecret.password}</p>
+
+          {#if transientSecret.userName}
+          <h1>User Name</h1>
+          <p>{transientSecret.userName}</p>
+          {/if}
+
+          {#if transientSecret.site}
+          <h1>Site</h1>
+          <p>{transientSecret.site}</p>
+          {/if}
+          {#if transientSecret.notes}
+          <h1>Notes</h1>
+          <p>{transientSecret.notes}</p>
+          {/if}
+        </fieldset>
+        {:else}
+       <form class="space-y-4" onsubmit={recoverSecret}>
           
           <!-- Emergency Data Input -->
         <div class="form-control">
@@ -82,6 +114,7 @@
             </button>
           </div>
         </form>
+        {/if}
         <button 
               onclick={cancel}
               class="btn btn-error w-full mt-10"

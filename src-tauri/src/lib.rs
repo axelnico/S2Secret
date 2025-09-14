@@ -282,6 +282,16 @@ struct Secret {
 }
 
 #[derive(Serialize,Deserialize)]
+struct TransientSecret {
+    title: String,
+    user_name: Option<String>,
+    site: Option<String>,
+    notes: Option<String>,
+    password: String,
+}
+
+
+#[derive(Serialize,Deserialize)]
 struct UserRegistrationRequest {
     name: String,
     email: String,
@@ -689,13 +699,13 @@ async fn renew_share(
 }
 
 #[tauri::command]
-async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: String, password: String) -> Result<(), ()> {
+async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: String, password: String) -> Result<TransientSecret, ()> {
     let file = fs::read(emergency_file).map_err(|_| ())?;
     let emergency_access_data: EmergencyContactFileAccess = ciborium::de::from_reader(file.as_slice()).map_err(|_| ())?;
     let argon2 = Argon2::default();
     let password_hash = argon2.hash_password(password.as_ref(), &SaltString::from_b64(&emergency_access_data.password_salt).unwrap()).ok().unwrap().to_string();
     let mac = HMAC::mac([password_hash.as_bytes(),emergency_access_data.ticket_share.as_slice()].concat(), emergency_access_data.a.as_slice());
-    let emergency_access_request = EmergencyContactSecretAccessRequest {
+    let emergency_access_request: EmergencyContactSecretAccessRequest = EmergencyContactSecretAccessRequest {
         password_hash,
         contact_prover_mac: mac.to_vec(),
         contact_ticket_share: emergency_access_data.ticket_share,
@@ -718,12 +728,37 @@ async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: St
         let contact_v_share = Share::try_from(emergency_access_data.v_share.as_slice()).map_err(|_| ())?;
         let server_v_share = Share::try_from(recovered_secret.server_v.as_slice()).map_err(|_| ())?;
         let v = sharks.recover([&contact_v_share, &server_v_share]).ok().unwrap_or_default();
-        let mut encryption_key_for_secret = [0u8; 32];
-        let mut encryption_key_for_secret_descriptive_data = [0u8; 32];
-        Argon2::default().hash_password_into(password.as_ref(), &v, &mut encryption_key_for_secret).ok().unwrap();
-        Argon2::default().hash_password_into(password.as_ref(), emergency_access_data.password_salt.as_bytes(), &mut encryption_key_for_secret_descriptive_data).ok().unwrap();
-
-        Ok(())
+        let mut key_encryption_key = [0u8; 32];
+        //let mut encryption_key_for_secret_descriptive_data = [0u8; 32];
+        Argon2::default().hash_password_into(password.as_ref(), &v, &mut key_encryption_key).ok().unwrap();
+        let data_encryption_key = decrypt(&key_encryption_key, &emergency_access_data.data_encryption_key).map_err(|_| ())?;
+        //Argon2::default().hash_password_into(password.as_ref(), emergency_access_data.password_salt.as_bytes(), &mut encryption_key_for_secret_descriptive_data).ok().unwrap();
+        let decrypted_title = decrypt(&data_encryption_key, &recovered_secret.title).map_err(|_| ())?;
+        let title = String::from_utf8(decrypted_title).map_err(|_| ())?;
+        let decrypted_secret = decrypt(&key_encryption_key, &recovered_secret.encrypted_secret).map_err(|_| ())?;
+        let password = String::from_utf8(decrypted_secret).map_err(|_| ())?;
+        let mut user_name: Option<String> = None;
+        let mut site: Option<String> = None;
+        let mut notes: Option<String> = None;
+        if let Some(user_name_encrypted) = &recovered_secret.user_name {
+            let user_name_decrypted = decrypt(&data_encryption_key, &user_name_encrypted).map_err(|_| ())?;
+            user_name = Some(String::from_utf8(user_name_decrypted).map_err(|_| ())?);
+        }
+        if let Some(site_encrypted) = &recovered_secret.site {
+            let decrypted_site = decrypt(&data_encryption_key, &site_encrypted).map_err(|_| ())?;
+            site = Some(String::from_utf8(decrypted_site).map_err(|_| ())?);
+        }
+        if let Some(notes_encrypted) = &recovered_secret.notes {
+            let decrypted_notes = decrypt(&data_encryption_key, &notes_encrypted).map_err(|_| ())?;
+            notes = Some(String::from_utf8(decrypted_notes).map_err(|_| ())?);
+        }
+        Ok(TransientSecret {
+            title,
+            user_name,
+            site,
+            notes,
+            password,
+        })
     }
 }
 
@@ -768,7 +803,7 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
     if emergency_access_response.status() != 204 {
         return Err(());
     } else {
-        let encrypted_data_encryption_key = store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a, &password).await?;
+        let encrypted_data_encryption_key = store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a, &v, &password).await?;
         let mut save_emergency_file_buffer = Vec::new();
         let emergency_contact_file_access = EmergencyContactFileAccess {
             id_emergency_contact,
@@ -857,12 +892,12 @@ async fn store_local_emergency_access_data(
     v_share: &Share,
     a_share: &Share,
     a: &[u8; 64],
+    v: &[u8; 64],
     password: &Vec<u8>
 ) -> Result<Vec<u8>,()> {
     let mut encryption_key_for_emergency_access = [0u8; 32];
-    let password_salt = password_salt_of_emergency_contact(&state, &emergency_contact_id).await?;
-    // TODO: use v instead of password_salt to derive the encryption key as password salt is not secret and it is used for authentication
-    Argon2::default().hash_password_into(password.as_slice(), &password_salt.as_bytes(), &mut encryption_key_for_emergency_access).ok().unwrap();
+    //let password_salt = password_salt_of_emergency_contact(&state, &emergency_contact_id).await?;
+    Argon2::default().hash_password_into(password.as_slice(), &v.as_ref(), &mut encryption_key_for_emergency_access).ok().unwrap();
     let data_encryption_key = data_encryption_key_for_secret(&state, &secret_id).await?;
     let encrypted_data_encryption_key = encrypt(encryption_key_for_emergency_access.as_ref(), data_encryption_key.as_ref()).map_err(|_| ())?;
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
@@ -886,11 +921,11 @@ async fn store_local_share(
     secret_id: &uuid::Uuid,
     share: &Share,
     padding_characters_count: usize,
+    data_encryption_key: &[u8]
 ) -> Result<(), ()> {
-    let data_encryption_key = Aes256Gcm::generate_key(OsRng);
-    let encrypted_share = encrypt(data_encryption_key.as_ref(), &Vec::from(share)).map_err(|_| ())?;
-    let encrypted_padding_characters_count = encrypt(data_encryption_key.as_ref(), &padding_characters_count.to_le_bytes()).map_err(|_| ())?;
-    let encrypted_data_encryption_key = encrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), data_encryption_key.as_ref()).map_err(|_| ())?;
+    let encrypted_share = encrypt(data_encryption_key, &Vec::from(share)).map_err(|_| ())?;
+    let encrypted_padding_characters_count = encrypt(data_encryption_key, &padding_characters_count.to_le_bytes()).map_err(|_| ())?;
+    let encrypted_data_encryption_key = encrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), data_encryption_key).map_err(|_| ())?;
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
     sqlx::query("INSERT INTO secret (id, client_share, client_share_padding, data_encryption_key, updated_at, user_id) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET client_share = excluded.client_share, client_share_padding = excluded.client_share_padding, data_encryption_key=excluded.data_encryption_key, updated_at = excluded.updated_at")
         .bind(secret_id.to_string())
@@ -913,12 +948,7 @@ async fn update_local_share_on_renewal(
     updated_at: NaiveDateTime,
 ) -> Result<(), ()> {
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
-    let data_encryption_key = sqlx::query("SELECT data_encryption_key FROM secret WHERE id = ?")
-        .bind(secret_id.to_string())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|_| ())?;
-    let data_encryption_key: Vec<u8> = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), data_encryption_key.get(0)).map_err(|_| ())?;
+    let data_encryption_key = data_encryption_key_for_secret(state, secret_id).await?;
     let encrypted_share = encrypt(&data_encryption_key, &Vec::from(share)).map_err(|_| ())?;
     sqlx::query("UPDATE secret SET client_share = ?, updated_at = ? WHERE id = ?")
         .bind(encrypted_share)
@@ -1036,7 +1066,7 @@ async fn load_secret_descriptive_data(state: State<'_, Mutex<S2SecretData>>, sec
     else {
         let secret_response_bytes = secret_response.bytes().await.map_err(|_| ())?;
         let secret: Secret = ciborium::de::from_reader(secret_response_bytes.as_ref()).map_err(|_| ())?;
-        let decrypted_password = secret_descriptive_data(&state, &secret)?;
+        let decrypted_password = secret_descriptive_data(&state, &secret).await?;
         state.passwords.insert(secret.id_secret, decrypted_password);
         Ok("Secret descriptive data loaded successfully".to_string())
     }
@@ -1045,22 +1075,23 @@ async fn load_secret_descriptive_data(state: State<'_, Mutex<S2SecretData>>, sec
 
 
 
-fn secret_descriptive_data(state: &S2SecretData, secret: &Secret) -> Result<Password, ()> {
-    let decrypted_title = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &secret.title).map_err(|_| ())?;
+async fn secret_descriptive_data(state: &S2SecretData, secret: &Secret) -> Result<Password, ()> {
+    let data_encryption_key = data_encryption_key_for_secret(&state, &secret.id_secret).await.map_err(|_| ())?;
+    let decrypted_title = decrypt(&data_encryption_key, &secret.title).map_err(|_| ())?;
     let title = String::from_utf8(decrypted_title).map_err(|_| ())?;
-    let mut user_name: Option<String> = None;
+    let mut user_name: Option<String> = None; 
     let mut site: Option<String> = None;
     let mut notes: Option<String> = None;
     if let Some(user_name_encrypted) = &secret.user_name {
-        let user_name_decrypted = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &user_name_encrypted).map_err(|_| ())?;
+        let user_name_decrypted = decrypt(&data_encryption_key, &user_name_encrypted).map_err(|_| ())?;
         user_name = Some(String::from_utf8(user_name_decrypted).map_err(|_| ())?);
     }
     if let Some(site_encrypted) = &secret.site {
-        let decrypted_site = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &site_encrypted).map_err(|_| ())?;
+        let decrypted_site = decrypt(&data_encryption_key, &site_encrypted).map_err(|_| ())?;
         site = Some(String::from_utf8(decrypted_site).map_err(|_| ())?);
     }
     if let Some(notes_encrypted) = &secret.notes {
-        let decrypted_notes = decrypt(state.password_encryption_key.expose_secret().as_ref().unwrap(), &notes_encrypted).map_err(|_| ())?;
+        let decrypted_notes = decrypt(&data_encryption_key, &notes_encrypted).map_err(|_| ())?;
         notes = Some(String::from_utf8(decrypted_notes).map_err(|_| ())?);
     }
     Ok(Password {
@@ -1090,7 +1121,7 @@ async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2SecretData>>) ->
         let secrets_response_bytes = secrets_response.bytes().await.map_err(|_| ())?;
         let secrets: Vec<Secret> = ciborium::de::from_reader(secrets_response_bytes.as_ref()).map_err(|_| ())?;
         for secret in secrets {
-            let decrypted_password = secret_descriptive_data(&state, &secret)?;
+            let decrypted_password = secret_descriptive_data(&state, &secret).await?;
             state.passwords.insert(secret.id_secret, decrypted_password);
         }
         Ok("Load secrets descriptive data successfully".to_string())
@@ -1119,12 +1150,11 @@ async fn load_emergency_contacts(state: State<'_, Mutex<S2SecretData>>) -> Resul
 #[tauri::command]
 async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_name: String, password: String, site: String, notes: String) -> Result<String, ()> {
     let mut state = state.lock().await;
-    let password_key = state.password_encryption_key.expose_secret().as_ref().unwrap();
     let (mut shares, padding_characters_count) = secret_padded_shares(&password);
     let mut buffer = Vec::new();
-
+    let data_encryption_key = Aes256Gcm::generate_key(OsRng);
     let new_secret_request = build_secret_upsert_request(
-        password_key,
+        &data_encryption_key.as_ref(),
         title,
         user_name,
         &shares[1],
@@ -1142,10 +1172,10 @@ async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_n
     } else {
         let add_secret_response_bytes = add_secret_response.bytes().await.map_err(|_| ())?;
         let added_secret: Secret = ciborium::de::from_reader(add_secret_response_bytes.as_ref()).map_err(|_| ())?;
-        if let Err(_) = store_local_share(&state, &added_secret.id_secret ,&shares[0], padding_characters_count).await {
+        if let Err(_) = store_local_share(&state, &added_secret.id_secret ,&shares[0], padding_characters_count, &data_encryption_key).await {
             return Err(());
         }
-        let decrypted_password = secret_descriptive_data(&state, &added_secret)?;
+        let decrypted_password = secret_descriptive_data(&state, &added_secret).await?;
         state.passwords.insert(added_secret.id_secret, decrypted_password);
     }
     shares.zeroize();
@@ -1165,18 +1195,18 @@ fn secret_padded_shares(password: &str) -> (Vec<Share>,usize) {
 }
 
 async fn build_secret_upsert_request(
-    password_key: &Vec<u8>,
+    data_encryption_key: &[u8],
     title: String,
     user_name: String,
     server_share: &Share,
     site: String,
     notes: String,
 ) -> Result<SecretUpsertRequest, ()> {
-    let encrypted_title = encrypt(password_key, title.as_bytes())?;
-    let encrypted_user_name = encrypt(password_key, user_name.as_bytes())?;
-    let encrypted_site =  encrypt(password_key, site.as_bytes())?;
-    let encrypted_notes =  encrypt(password_key, notes.as_bytes())?;
-    
+    let encrypted_title = encrypt(data_encryption_key, title.as_bytes())?;
+    let encrypted_user_name = encrypt(data_encryption_key, user_name.as_bytes())?;
+    let encrypted_site =  encrypt(data_encryption_key, site.as_bytes())?;
+    let encrypted_notes =  encrypt(data_encryption_key, notes.as_bytes())?;
+
     Ok(SecretUpsertRequest {
         title: encrypted_title,
         user_name: if user_name.is_empty() { None } else { Some(encrypted_user_name) },
@@ -1201,7 +1231,7 @@ async fn disable_proactive_protection(
     } else {
         let update_secret_response_bytes = protection_response.bytes().await.map_err(|_| ())?;
         let updated_secret: Secret = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
-        let decrypted_password = secret_descriptive_data(&state, &updated_secret)?;
+        let decrypted_password = secret_descriptive_data(&state, &updated_secret).await?;
         state.passwords.insert(updated_secret.id_secret, decrypted_password);
         Ok(())
     }
@@ -1267,7 +1297,7 @@ async fn enable_proactive_protection(
     } else {
         let update_secret_response_bytes = protection_response.bytes().await.map_err(|_| ())?;
         let updated_secret: Secret = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
-        let decrypted_password = secret_descriptive_data(&state, &updated_secret)?;
+        let decrypted_password = secret_descriptive_data(&state, &updated_secret).await?;
         state.passwords.insert(updated_secret.id_secret, decrypted_password);
         Ok(())
     }
@@ -1276,12 +1306,12 @@ async fn enable_proactive_protection(
 #[tauri::command]
 async fn update_secret(state: State<'_, Mutex<S2SecretData>>, id: Uuid, title: String, user_name: String, password: String, site: String, notes: String) -> Result<String, ()> {
     let mut state = state.lock().await;
-    let password_key = state.password_encryption_key.expose_secret().as_ref().unwrap();
     let (shares, padding_characters_count) = secret_padded_shares(&password);
     let mut buffer = Vec::new();
+    let data_encryption_key = data_encryption_key_for_secret(&state, &id).await?;
 
     let secret_update_request = build_secret_upsert_request(
-        password_key,
+        &data_encryption_key,
         title,
         user_name,
         &shares[1],
@@ -1299,10 +1329,10 @@ async fn update_secret(state: State<'_, Mutex<S2SecretData>>, id: Uuid, title: S
     } else {
         let update_secret_response_bytes = update_secret_response.bytes().await.map_err(|_| ())?;
         let updated_secret: Secret = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
-        if let Err(_) = store_local_share(&state, &updated_secret.id_secret ,&shares[0], padding_characters_count).await {
+        if let Err(_) = store_local_share(&state, &updated_secret.id_secret ,&shares[0], padding_characters_count, &data_encryption_key).await {
             return Err(());
         }
-        let decrypted_password = secret_descriptive_data(&state, &updated_secret)?;
+        let decrypted_password = secret_descriptive_data(&state, &updated_secret).await?;
         state.passwords.insert(updated_secret.id_secret, decrypted_password);
     }
     Ok("Secret updated successfully".to_string())
