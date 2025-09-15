@@ -835,6 +835,12 @@ async fn copy_password(
     Ok(())
 }
 
+#[tauri::command]
+async fn copy_to_clipboard(app_handle: tauri::AppHandle,_: State<'_, Mutex<S2SecretData>>, text: String) -> Result<(), ()> {
+    app_handle.clipboard().write_text(text).map_err(|_| ())?;
+    Ok(())
+}
+
 async fn store_local_emergency_contact_share(
     state: &S2SecretData,
     emergency_contact_id: &uuid::Uuid,
@@ -1349,6 +1355,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![login,register_user,
             is_authenticated,
             logout, 
@@ -1375,7 +1382,8 @@ pub fn run() {
             add_access_to_emergency_contact_for_secret,
             renew_shares,
             renew_share,
-            recover_secret
+            recover_secret,
+            copy_to_clipboard,
             ])
         .run(tauri::generate_context!())
         .expect("error while running S2Secret application");
