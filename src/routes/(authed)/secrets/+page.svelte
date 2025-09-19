@@ -44,7 +44,7 @@
 
     async function searchSecrets(term: string) {
       console.log("Searching for:", term);
-      if (term.length >= 3) {
+      if (term.length > 0) {
         setPasswords(await invoke("filter_by_search_term", { term }));
       } else {
         setPasswords(await invoke("passwords"));
