@@ -770,13 +770,13 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
     let mut a = [0u8; 64];
     OsRng.fill_bytes(&mut a);
     let password = recover_emergency_contact_password(&state, &id_emergency_contact).await.unwrap();
-    let mysecret = b"my secret"; // TODO: get the actual secret
+    let secret = recover_password(&state, &secret_id).await.unwrap();
     let salt = password_salt_of_emergency_contact(&state, &id_emergency_contact).await.unwrap();
     let argon2 = Argon2::default();
     let password_hash = argon2.hash_password(password.as_ref(), &SaltString::from_b64(&salt).unwrap()).ok().unwrap().to_string();
     let mut encryption_key_for_secret = [0u8; 32];
     Argon2::default().hash_password_into(password.as_ref(), &v, &mut encryption_key_for_secret).ok().unwrap();
-    let encrypted_secret = encrypt(&encryption_key_for_secret, mysecret).map_err(|_| ())?;
+    let encrypted_secret = encrypt(&encryption_key_for_secret, secret.as_bytes()).map_err(|_| ())?;
     let ticket = Ticket {
         password_hash: password_hash,
         encrypted_secret,
