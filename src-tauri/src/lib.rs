@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, ops::DerefMut, path::Path};
+use std::{collections::HashMap, fs, num::NonZero, ops::DerefMut, path::Path};
 
 use coset::{CborSerializable, CoseEncrypt0, CoseEncrypt0Builder, HeaderBuilder};
 use secrecy::{zeroize::Zeroize, ExposeSecret, ExposeSecretMut, SecretBox};
@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use tokio::sync::Mutex;
 use tauri_plugin_http::reqwest;
-use opaque_ke::{CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientLoginFinishResult, ClientRegistration, ClientRegistrationFinishParameters, CredentialFinalization, CredentialRequest, CredentialResponse, RegistrationRequest, RegistrationResponse, RegistrationUpload};
+use opaque_ke::{CipherSuite, ClientLogin, ClientLoginFinishParameters, ClientLoginFinishResult, ClientRegistration, ClientRegistrationFinishParameters, CredentialFinalization, CredentialRequest, CredentialResponse, Identifiers, RegistrationRequest, RegistrationResponse, RegistrationUpload};
 use rand::{rngs::OsRng, Rng};
 use rand::RngCore;
 use argon2::Argon2;
@@ -164,6 +164,7 @@ struct S2SecretData {
 
 #[derive(Serialize,Deserialize)]
 struct LoginInitialRequest {
+    client_identifier: uuid::Uuid,
     email: String,
     message: CredentialRequest<DefaultCipherSuite>,
 }
@@ -305,12 +306,21 @@ struct UserRegistrationFinishResult {
     message: RegistrationUpload<DefaultCipherSuite>
 }
 
+#[derive(Serialize,Deserialize)]
+struct S2SecretLoginParameters {
+    client_pepper: Vec<u8>,
+    client_identifier: uuid::Uuid,
+    server_static_public_key: Vec<u8>
+}
 
 #[tauri::command]
 async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_handle: tauri::AppHandle,email: String, name: String, master_password: String) -> Result<String, ()> {
     let mut state = state.lock().await;
     let mut client_rng = OsRng;
-    let client_registration_start_result = ClientRegistration::<DefaultCipherSuite>::start(&mut client_rng, master_password.as_bytes()).unwrap();
+    let mut client_pepper = [0u8; 32];
+    OsRng.fill_bytes(&mut client_pepper);
+    let new_user_id = Uuid::new_v4();
+    let client_registration_start_result = ClientRegistration::<DefaultCipherSuite>::start(&mut client_rng, [master_password.as_bytes(),&client_pepper].concat().as_ref()).unwrap();
     let registration_request_bytes = client_registration_start_result.message;
     let mut buffer = Vec::new();
     let registration_request = UserRegistrationRequest {
@@ -330,7 +340,7 @@ async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_handle: tauri::
     }
     let response_bytes = registration_initial_response.bytes().await.map_err(|_| ())?;
     let registration_initial_response: Vec<u8> = ciborium::de::from_reader(response_bytes.as_ref()).map_err(|_| ())?;
-    let client_registration_finish_result = client_registration_start_result.state.finish(&mut client_rng, master_password.as_bytes(), RegistrationResponse::deserialize(&registration_initial_response).unwrap(), ClientRegistrationFinishParameters::default()).unwrap();
+    let client_registration_finish_result = client_registration_start_result.state.finish(&mut client_rng, [master_password.as_bytes(),&client_pepper].concat().as_ref(), RegistrationResponse::deserialize(&registration_initial_response).unwrap(), ClientRegistrationFinishParameters::new(Identifiers { client: Some(new_user_id.as_bytes()) ,server: None }, None)).unwrap();
     let registration_finish_bytes = client_registration_finish_result.message;
     buffer = Vec::new();
     let registration_finish_request = UserRegistrationFinishResult {
@@ -349,7 +359,7 @@ async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_handle: tauri::
     } else {
         let registration_final_response_bytes = registration_final_response.bytes().await.map_err(|_| ())?;
         let new_user_id_response: S2SecretUserUpsertResponse = ciborium::de::from_reader(registration_final_response_bytes.as_ref()).map_err(|_| ())?;
-        create_client_data(&mut state, &app_handle, &new_user_id_response.id_user).await?;
+        create_client_data(&mut state, &app_handle, &new_user_id, &client_pepper, &client_registration_finish_result.server_s_pk.serialize()).await?;
         Ok("User registered successfully".to_string())
     }
 }
@@ -360,7 +370,7 @@ async fn is_authenticated(state: State<'_, Mutex<S2SecretData>>) -> Result<bool,
     Ok(state.session_id.is_some())
 }
 
-async fn create_client_data(state: &mut S2SecretData,app_handle: &tauri::AppHandle, user_id: &Uuid) -> Result<String, ()> {
+async fn create_client_data(state: &mut S2SecretData,app_handle: &tauri::AppHandle, user_id: &Uuid, client_pepper: &[u8], server_static_public_key: &[u8]) -> Result<String, ()> {
    let file_path = app_handle.dialog().file().set_file_name("s2secret.sqlite").add_filter("SQLite", &["sqlite"]).blocking_save_file().unwrap();
    let file_path = file_path.as_path().unwrap();
    state.client_local_data_path = file_path.to_str().unwrap().to_string();
@@ -369,7 +379,7 @@ async fn create_client_data(state: &mut S2SecretData,app_handle: &tauri::AppHand
         .create_if_missing(true);
     let client_db_pool = SqlitePool::connect_with(client_db_connection_options).await.map_err(|_| ())?;
     let mut transaction = client_db_pool.begin().await.map_err(|_| ())?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS user (id TEXT PRIMARY KEY, client_key_file BLOB NOT NULL);")
+    sqlx::query("CREATE TABLE IF NOT EXISTS user (id TEXT PRIMARY KEY, client_pepper BLOB NOT NULL, server_static_public_key BLOB NOT NULL);")
         .execute(&mut *transaction)
         .await
         .map_err(|_| ())?;
@@ -387,9 +397,10 @@ async fn create_client_data(state: &mut S2SecretData,app_handle: &tauri::AppHand
         .map_err(|_| ())?;
     let mut client_key_file = [0u8; 32];
     OsRng.fill_bytes(&mut client_key_file);
-    sqlx::query("INSERT INTO user (id, client_key_file) VALUES (?, ?) ON CONFLICT(id) DO NOTHING;")
+    sqlx::query("INSERT INTO user (id, client_pepper, server_static_public_key) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING;")
         .bind(user_id.to_string())
-        .bind(client_key_file.to_vec())
+        .bind(client_pepper.to_vec())
+        .bind(server_static_public_key.to_vec())
         .execute(&mut *transaction)
         .await
         .map_err(|_| ())?;
@@ -477,12 +488,15 @@ async fn select_database_file(state: State<'_, Mutex<S2SecretData>>, app_handle:
 
 #[tauri::command]
 async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_password: String) -> Result<String, ()> {
+    let mut state = state.lock().await;
+    let login_parameters = login_parameters_for_user(&state).await.unwrap();
     let mut client_rng = OsRng;
-    let client_login_start_result = ClientLogin::<DefaultCipherSuite>::start(&mut client_rng, master_password.as_bytes()).unwrap();
+    let client_login_start_result = ClientLogin::<DefaultCipherSuite>::start(&mut client_rng, [master_password.as_bytes(),&login_parameters.client_pepper].concat().as_ref()).unwrap();
     let login_request_bytes = client_login_start_result.message;
     let http_client = reqwest::Client::new();
     let mut buffer = Vec::new();
     let login_initial_request: LoginInitialRequest = LoginInitialRequest {
+        client_identifier: login_parameters.client_identifier,
         email: email.clone(),
         message: login_request_bytes.clone(),
     };
@@ -499,9 +513,16 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
     let response_bytes = login_initial_response.bytes().await.map_err(|_| ())?;
     let login_initial_response: Vec<u8> = ciborium::de::from_reader(response_bytes.as_ref()).map_err(|_| ())?;
     let client_login_finish_result = client_login_start_result.state.finish(
-        master_password.as_bytes(),
+        [master_password.as_bytes(),&login_parameters.client_pepper].concat().as_ref(),
         CredentialResponse::deserialize(&login_initial_response).unwrap(),
-        ClientLoginFinishParameters::default(),
+        ClientLoginFinishParameters::new(
+            None,
+            Identifiers {
+                client: Some(login_parameters.client_identifier.as_bytes()),
+                server: None
+            },
+            None,
+        ),
     ).unwrap();
     buffer = Vec::new();
     let login_final_request = LoginFinalRequest {
@@ -519,7 +540,6 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
         return Err(());
     }
     //let session_id = client_final_response.headers().get("session-id").unwrap().clone();
-    let mut state = state.lock().await;
     //state.session_id = Some(uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap());
     state.session_key = SecretBox::new(Box::new(Some(client_login_finish_result.session_key.to_vec())));
     state.password_encryption_key = SecretBox::new(Box::new(Some(client_login_finish_result.export_key.to_vec())));
@@ -696,6 +716,17 @@ async fn renew_share(
 ) -> Result<String, ()> {
     let state = state.lock().await;
     share_renewal_for_secret(&state, &secret_id).await
+}
+
+async fn share_renewal_for_emergency_access_secret(state: &S2SecretData,secret_id: &Uuid) -> Result<String,()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let emergency_contacts_accesses = sqlx::query("select eca.id_emergency_contact, eca.data_encryption_key, eca.ticket_share, eca.v_share from emergency_contact_access eca inner join emergency_contact ec on eca.id_emergency_contact = ec.id where eca.id_secret = ? and ec.user_id = ?")
+        .bind(secret_id.to_string())
+        .bind(state.user_id.unwrap_or_default().to_string())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    Ok("Renew successfull".to_string())
 }
 
 #[tauri::command]
@@ -890,6 +921,21 @@ async fn data_encryption_key_for_secret(state: &S2SecretData, secret_id: &uuid::
     Ok(data_encryption_key[..32].try_into().map_err(|_| ())?)
 }
 
+// TODO: allow to store several users on the same database 
+async fn login_parameters_for_user(state: &S2SecretData) -> Result<S2SecretLoginParameters, ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let login_parameters = sqlx::query("SELECT id, client_pepper, server_static_public_key FROM user")
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    Ok(S2SecretLoginParameters {
+        client_identifier: uuid::Uuid::parse_str(login_parameters.get(0)).map_err(|_| ())?,
+        client_pepper: login_parameters.get(1),
+        server_static_public_key: login_parameters.get(2)
+    })
+}
+
 async fn store_local_emergency_access_data(
     state: &S2SecretData,
     emergency_contact_id: &uuid::Uuid,
@@ -1048,13 +1094,12 @@ async fn emergency_contacts(state: State<'_, Mutex<S2SecretData>>) -> Result<Vec
 async fn renew_shares(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
     for (secret_id, password) in &state.passwords {
-        if let Some(next_share_update) = password.next_share_update {
-            if next_share_update <= Utc::now().naive_utc() {
-                //if let Err(_) = share_renewal_for_secret(&state, secret_id).await {
-                //    return Err(());
-                //}
-            }
-        }
+        share_renewal_for_secret(&state, secret_id).await;
+        //if let Some(next_share_update) = password.next_share_update {
+        //    if next_share_update <= Utc::now().naive_utc() {
+        //        
+        //    }
+        //}
     }
     Ok("Shares renewed successfully".to_string())
 }
