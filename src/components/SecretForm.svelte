@@ -17,6 +17,8 @@
         onSave: (secret: Secret) => Promise<void>;
     }
 
+    let isPasswordVisible = $state(false);
+
     let { secret, isOpened, onClose, onSave } : Props = $props();
 
     let secret_modification = $state<Secret>({
@@ -28,9 +30,8 @@
         notes: secret?.notes || ""
     });
 
-    let password = $derived.by(async () => {
-        return secret_modification ? await invoke<string>("reveal_password", { secretId: secret_modification.id }) : "";  
-    })
+    //secret_modification.password = await invoke<string>("reveal_password", { secretId: secret_modification.id })
+
 
 </script>
 
@@ -96,7 +97,7 @@
             <span class="label-text">Password</span>
           </label>
           <input 
-            type="password" 
+            type={isPasswordVisible ? 'text' : 'password'}
             id="password" 
             name="password"
             autocorrect="off"
@@ -108,6 +109,17 @@
             class="input input-secondary w-full"
             bind:value={secret_modification.password}
           />
+          <button
+          class={`btn border-solid border-info btn-square join-item ${isPasswordVisible ? 'text-success' : 'text-error'}`}
+          onclick={() => (isPasswordVisible = !isPasswordVisible)}
+          title={isPasswordVisible ? 'Hide password' : 'Show password'}
+        >
+          {#if isPasswordVisible}
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
+          {:else}
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          {/if}
+        </button>
         </div>
         <div class="form-control">
             <label class="label" for="notes">
