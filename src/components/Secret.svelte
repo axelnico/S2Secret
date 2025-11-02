@@ -66,26 +66,39 @@
       <div class="flex w-full">
         <div class="card bg-base-300 rounded-box h-20 flex flex-row grow items-center space-x-2 px-4 flex-1">
           <span class="font-semibold mr-2">Username:</span>
-          <button class="pointer-events-auto p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={() => {}}>
-            <span class="font-semibold mr-2">{secret.user_name}</span>
+          <button aria-label="copy-username" class="pointer-events-auto p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={() => {}}>
+            <input 
+              type="text"
+              id="username" 
+              name="username"
+              autocorrect="off"
+              autocapitalize="off"
+              autocomplete="off"
+              readonly
+              required
+              class="border-none w-full input input-secondary join-item font-mono focus:outline-none"
+              value={secret.user_name}
+            />
             </button>
         </div>
         <div class="divider divider-horizontal divider-primary"></div>
         <div class="card bg-base-300 rounded-box h-20 flex flex-row grow items-center space-x-2 px-4 flex-1">
           <span class="font-semibold mr-2">Password:</span>
-      <button class="pointer-events-auto p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={copyPasswordToClipboard}>
-        {#if passwordVisible}
-        <span class="text-base normal-case">{password}</span>
-        {:else}
-        <div class="flex items-center">
-          {#each { length: 12 }, password}
-          <svg width="15" height="15" viewBox="0 0 48 48" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-            <rect width="48" height="48" fill="white" fill-opacity="0.01"/>
-            <path d="M24 33C28.9706 33 33 28.9706 33 24C33 19.0294 28.9706 15 24 15C19.0294 15 15 19.0294 15 24C15 28.9706 19.0294 33 24 33Z" fill="currentColor" stroke="currentColor" stroke-width="4"/>
-            </svg>
-          {/each}
-        </div>
-        {/if}
+      <button aria-label="copy-password" class="pointer-events-auto p-2 bg-transparent border-none text-accent hover:text-primary-dark focus:outline-none focus:ring-2 focus:ring-success mr-2" onclick={copyPasswordToClipboard}>
+        <!-- Use bg-transparent to remove input background -->  
+        <input 
+              type={passwordVisible ? 'text' : 'password'}
+              id="password" 
+              name="password"
+              autocorrect="off"
+              autocapitalize="off"
+              autocomplete="off"
+              readonly
+              required
+              maxlength="128"
+              class="border-none w-full input input-secondary join-item font-mono focus:outline-none"
+              value={passwordVisible ? password : "************"}
+            />
       </button>
         </div>
       </div>
