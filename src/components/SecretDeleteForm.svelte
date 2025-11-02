@@ -2,12 +2,13 @@
 
     import { invoke } from "@tauri-apps/api/core";
     import { setPasswords } from "../state/secrets.svelte";
+    import { derived } from "svelte/store";
 
     let {secretId, secretTitle, isOpened, onClose } = $props();
 
     let deleteConfirmationInputText = $state("");
 
-    let deleteConfirmationInputTextHint = `delete ${secretTitle}`;
+    let deleteConfirmationInputTextHint = $derived(`delete ${secretTitle}`);
 
     async function delete_secret() {
       const secret_deletion_response = await invoke("delete_secret", { secretId: secretId });
