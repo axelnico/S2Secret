@@ -30,6 +30,12 @@
         notes: secret?.notes || ""
     });
 
+    async function loadPassword() {
+       if (secret_modification.id) {
+          secret_modification.password = await invoke<string>("reveal_password", { secretId: secret_modification.id });
+       }
+    }
+
     //secret_modification.password = await invoke<string>("reveal_password", { secretId: secret_modification.id })
 
 
@@ -92,25 +98,29 @@
           </div>
         
         <!-- Password Input -->
-        <div class="form-control">
-          <label class="label" for="password">
-            <span class="label-text">Password</span>
-          </label>
-          <input 
-            type={isPasswordVisible ? 'text' : 'password'}
-            id="password" 
-            name="password"
-            autocorrect="off"
-            autocapitalize="off"
-            autocomplete="off"
-            required
-            maxlength="128"
-            placeholder="************" 
-            class="input input-secondary w-full"
-            bind:value={secret_modification.password}
-          />
-          <button
-          class={`btn border-solid border-info btn-square join-item ${isPasswordVisible ? 'text-success' : 'text-error'}`}
+         {#await loadPassword()}
+           <p>Loading password...</p>
+         {:then}
+          <div class="form-control">
+            <label class="label" for="password">
+              <span class="label-text">Password</span>
+            </label>
+            <div class="join">
+            <input 
+              type={isPasswordVisible ? 'text' : 'password'}
+              id="password" 
+              name="password"
+              autocorrect="off"
+              autocapitalize="off"
+              autocomplete="off"
+              required
+              maxlength="128"
+              placeholder="************" 
+              class="input input-secondary input-bordered join-item w-full font-mono"
+              bind:value={secret_modification.password}
+            />
+              <button
+          class={`btn border-secondary border-solid border-info btn-square join-item ${isPasswordVisible ? 'text-success' : 'text-error'}`}
           onclick={() => (isPasswordVisible = !isPasswordVisible)}
           title={isPasswordVisible ? 'Hide password' : 'Show password'}
         >
@@ -120,7 +130,9 @@
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
           {/if}
         </button>
-        </div>
+            </div>
+          </div>
+          {/await}
         <div class="form-control">
             <label class="label" for="notes">
                 <span class="label-text">Notes</span>
