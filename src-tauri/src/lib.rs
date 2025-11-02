@@ -411,6 +411,7 @@ async fn create_client_data(state: &mut S2SecretData,app_handle: &tauri::AppHand
 #[tauri::command]
 async fn logged_user_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
+    let user_id = user_id_for_user(&state).await?;
     let user_data = state.http_client.get("http://localhost:3000/user")
         .send()
         .await
@@ -420,7 +421,7 @@ async fn logged_user_data(state: State<'_, Mutex<S2SecretData>>) -> Result<Strin
     }
     let response_bytes = user_data.bytes().await.map_err(|_| ())?;
     let user_data_response: UserDataResponse = ciborium::de::from_reader(response_bytes.as_ref()).map_err(|_| ())?;
-    state.user_id = Some(user_data_response.id_user);
+    state.user_id = Some(user_id);
     state.user_name = Some(user_data_response.name);
     state.user_email = Some(user_data_response.email);
     Ok("Loaded user data".to_string())
@@ -936,6 +937,17 @@ async fn login_parameters_for_user(state: &S2SecretData) -> Result<S2SecretLogin
     })
 }
 
+// TODO: allow to store several users on the same database 
+async fn user_id_for_user(state: &S2SecretData) -> Result<uuid::Uuid, ()> {
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let user_row = sqlx::query("SELECT id FROM user")
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    Ok(uuid::Uuid::parse_str(user_row.get(0)).map_err(|_| ())?)
+}
+
 async fn store_local_emergency_access_data(
     state: &S2SecretData,
     emergency_contact_id: &uuid::Uuid,
@@ -987,8 +999,7 @@ async fn store_local_share(
         .bind(Utc::now().timestamp())
         .bind(state.user_id.unwrap_or_default().to_string())
         .execute(&mut *transaction)
-        .await
-        .map_err(|_| ())?;
+        .await.map_err(|_| ())?;
     transaction.commit().await.map_err(|_| ())?;
     Ok(())
 }
@@ -1203,7 +1214,7 @@ async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_n
     let mut state = state.lock().await;
     let (mut shares, padding_characters_count) = secret_padded_shares(&password);
     let mut buffer = Vec::new();
-    let data_encryption_key = Aes256Gcm::generate_key(OsRng);
+    let data_encryption_key: aes_gcm::aead::generic_array::GenericArray<u8, _> = Aes256Gcm::generate_key(OsRng);
     let new_secret_request = build_secret_upsert_request(
         &data_encryption_key.as_ref(),
         title,
