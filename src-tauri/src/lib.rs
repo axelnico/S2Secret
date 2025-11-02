@@ -868,6 +868,19 @@ async fn copy_password(
 }
 
 #[tauri::command]
+async fn copy_username(
+    app_handle: tauri::AppHandle,
+    state: State<'_, Mutex<S2SecretData>>,
+    secret_id: Uuid,
+) -> Result<(), ()> {
+    let state = state.lock().await;
+    let password_entry = state.passwords.get(&secret_id).ok_or(())?;
+    app_handle.clipboard().write_text(password_entry.user_name.as_ref().unwrap()).unwrap();
+    Ok(())
+}
+
+
+#[tauri::command]
 async fn copy_to_clipboard(app_handle: tauri::AppHandle,_: State<'_, Mutex<S2SecretData>>, text: String) -> Result<(), ()> {
     app_handle.clipboard().write_text(text).map_err(|_| ())?;
     Ok(())
@@ -1430,6 +1443,7 @@ pub fn run() {
             reveal_password,
             send_2fa_secret_code,
             copy_password,
+            copy_username,
             select_database_file,
             select_emergency_file,
             enable_proactive_protection,
