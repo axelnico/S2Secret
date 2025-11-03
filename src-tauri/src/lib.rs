@@ -219,6 +219,12 @@ struct OneTimeSecretCodeRequest {
 }
 
 #[derive(Deserialize, Serialize)]
+struct EmergencyContactAccessInfo {
+    id_emergency_contact: Uuid,
+    id_secret: Uuid,
+}
+
+#[derive(Deserialize, Serialize)]
 pub struct EmergencyContactRequest {
     email: String,
     description: Option<String>,
@@ -644,6 +650,16 @@ async fn reveal_password(
     recover_password(&state, &secret_id).await
 }
 
+#[tauri::command]
+async fn reveal_emergency_contact_password(
+    state: State<'_, Mutex<S2SecretData>>,
+    emergency_contact_id: Uuid,
+) -> Result<String, ()> {
+    let state = state.lock().await;
+    let recovered_password = recover_emergency_contact_password(&state, &emergency_contact_id).await?;
+    Ok(String::from_utf8(recovered_password).map_err(|_| ())?)
+}
+
 async fn share_renewal_for_secret(
     state: &S2SecretData,
     secret_id: &Uuid,
@@ -791,6 +807,28 @@ async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: St
             notes,
             password,
         })
+    }
+}
+
+#[tauri::command]
+async fn remove_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid) -> Result<(), ()> {
+    let state = state.lock().await;
+    let response = state.http_client.delete(format!("http://localhost:3000/secrets/{}/emergency-contacts/{}", secret_id, id_emergency_contact))
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if response.status() != 204 {
+        return Err(());
+    } else {
+        let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+        sqlx::query("DELETE FROM emergency_contact_access WHERE id_emergency_contact = ? AND id_secret = ?;")
+            .bind(id_emergency_contact.to_string())
+            .bind(secret_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| ())?;
+        transaction.commit().await.map_err(|_| ())?;
+        Ok(())
     }
 }
 
@@ -1116,7 +1154,7 @@ async fn emergency_contacts(state: State<'_, Mutex<S2SecretData>>) -> Result<Vec
 
 #[tauri::command]
 async fn renew_shares(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
-    let mut state = state.lock().await;
+    let mut state: tokio::sync::MutexGuard<'_, S2SecretData> = state.lock().await;
     for (secret_id, password) in &state.passwords {
         share_renewal_for_secret(&state, secret_id).await;
         //if let Some(next_share_update) = password.next_share_update {
@@ -1220,6 +1258,56 @@ async fn load_emergency_contacts(state: State<'_, Mutex<S2SecretData>>) -> Resul
         }
         Ok("Load emergency contacts successfully".to_string())
     }
+}
+
+#[tauri::command]
+async fn get_emergency_accesses_for_all_secrets(state: State<'_, Mutex<S2SecretData>>) -> Result<Vec<EmergencyContactAccessInfo>, ()> {
+    let state = state.lock().await;
+    let mut transaction: sqlx::Transaction<'_, sqlx::Sqlite> = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let emergency_contact_access_rows = sqlx::query("SELECT eca.id_emergency_contact, eca.id_secret FROM emergency_contact_access eca inner join emergency_contact ec on eca.id_emergency_contact = ec.id where ec.user_id = ?")
+        .bind(state.user_id.unwrap_or_default().to_string())
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    let mut emergency_contact_accesses = Vec::new();
+    for row in emergency_contact_access_rows {
+        let emergency_contact_access = EmergencyContactAccessInfo {
+            id_emergency_contact: uuid::Uuid::parse_str(row.get(0)).map_err(|_| ())?,
+            id_secret: uuid::Uuid::parse_str(row.get(1)).map_err(|_| ())?,
+        };
+        emergency_contact_accesses.push(emergency_contact_access);
+    }
+    Ok(emergency_contact_accesses)
+}
+
+#[tauri::command]
+async fn get_emergency_access_file_data(state: State<'_, Mutex<S2SecretData>>, emergency_contact_id: Uuid, secret_id: Uuid, app_handle: tauri::AppHandle) -> Result<(), ()> {
+    let state = state.lock().await;
+    let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
+    let emergency_contact_access_row = sqlx::query("SELECT eca.data_encryption_key, eca.ticket_share, eca.v_share, eca.a_share, eca.a, ec.password_salt FROM emergency_contact_access eca inner join emergency_contact ec on eca.id_emergency_contact = ec.id WHERE eca.id_emergency_contact = ? AND eca.id_secret = ?")
+        .bind(emergency_contact_id.to_string())
+        .bind(secret_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| ())?;
+    transaction.commit().await.map_err(|_| ())?;
+    let mut save_emergency_file_buffer = Vec::new();
+    let emergency_contact_file_access = EmergencyContactFileAccess {
+        id_emergency_contact: emergency_contact_id,
+        id_secret: secret_id,
+        data_encryption_key: emergency_contact_access_row.get(0),
+        password_salt: emergency_contact_access_row.get(5),
+        ticket_share: emergency_contact_access_row.get(1),
+        v_share: emergency_contact_access_row.get(2),
+        a_share: emergency_contact_access_row.get(3),
+        a: emergency_contact_access_row.get(4),
+    };
+    ciborium::ser::into_writer(&emergency_contact_file_access,&mut save_emergency_file_buffer).map_err(|_| ())?;
+    let emergency_file_path = app_handle.dialog().file().set_file_name("emergency_access.cbor").add_filter("CBOR", &["cbor"]).blocking_save_file().unwrap();
+    let mut emergency_file = File::create(emergency_file_path.as_path().unwrap()).map_err(|_| ())?;
+    emergency_file.write_all(save_emergency_file_buffer.as_slice()).map_err(|_| ())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1441,6 +1529,7 @@ pub fn run() {
             load_emergency_contacts,
             emergency_contacts,
             reveal_password,
+            reveal_emergency_contact_password,
             send_2fa_secret_code,
             copy_password,
             copy_username,
@@ -1450,6 +1539,9 @@ pub fn run() {
             disable_proactive_protection,
             add_emergency_contact,
             add_access_to_emergency_contact_for_secret,
+            get_emergency_access_file_data,
+            get_emergency_accesses_for_all_secrets,
+            remove_access_to_emergency_contact_for_secret,
             renew_shares,
             renew_share,
             recover_secret,
