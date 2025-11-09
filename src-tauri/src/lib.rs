@@ -155,7 +155,6 @@ struct S2SecretData {
     session_id: Option<uuid::Uuid>,
     session_key: SecretBox<Option<Vec<u8>>>,
     password_encryption_key: SecretBox<Option<Vec<u8>>>,
-    server_key_file: SecretBox<Option<Vec<u8>>>,
     http_client: reqwest_middleware::ClientWithMiddleware,
     client_local_data_path: String,
     passwords: HashMap<Uuid, Password>,
@@ -180,7 +179,6 @@ struct UserDataResponse {
     id_user: Uuid,
     email: String,
     name: String,
-    server_key_file: Vec<u8>
 }
 #[derive(Serialize,Deserialize)]
 struct UpsertSecretResponse {
@@ -208,7 +206,6 @@ pub struct EmergencyContactSecretAccessResponse {
     user_name: Option<Vec<u8>>,
     site: Option<Vec<u8>>,
     notes: Option<Vec<u8>>,
-    server_key_file: Vec<u8>,
     server_v: Vec<u8>,
 }
 
@@ -228,7 +225,6 @@ struct EmergencyContactAccessInfo {
 pub struct EmergencyContactRequest {
     email: String,
     description: Option<String>,
-    server_key_file : Vec<u8>,
     server_share: Vec<u8>,
 }
 
@@ -237,7 +233,6 @@ pub struct EmergencyContact {
     id_emergency_contact: Uuid,
     email: String,
     description: Option<String>,
-    server_key_file : Vec<u8>,
     server_share: Vec<u8>,
 }
 
@@ -447,7 +442,6 @@ async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     state.user_email = None;
     state.session_key.zeroize();
     state.password_encryption_key.zeroize();
-    state.server_key_file.zeroize();
     state.passwords.clear();
     state.http_client.post("http://localhost:3000/auth/user/logout")
     .send()
@@ -1407,8 +1401,6 @@ async fn add_emergency_contact(
     password: String,
     description: Option<String>
 ) -> Result<(), ()> {
-    let mut server_key_file = [0u8; 32];
-    OsRng.fill_bytes(&mut server_key_file);
     let sharks = Sharks(2);
     let password_shares = sharks.dealer(password.as_bytes()).take(2).collect::<Vec<Share>>();
     let mut state = state.lock().await;
@@ -1416,7 +1408,6 @@ async fn add_emergency_contact(
     ciborium::ser::into_writer(&EmergencyContactRequest {
         email,
         description,
-        server_key_file: Vec::from(&server_key_file),
         server_share: Vec::from(&password_shares[1])
     }, &mut buffer).map_err(|_| ())?;
     let contact_response = state.http_client.post("http://localhost:3000/user/emergency-contacts")
