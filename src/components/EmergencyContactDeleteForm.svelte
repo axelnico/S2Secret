@@ -21,7 +21,7 @@
     <h3 class="text-lg font-bold">Emergency Contact Deletion</h3>
     <p class="py-4">You are going to delete all the information related to {emergencyEmail}.</p>
     <p class="py-4">ALL secrets accesses will be revoked for your contact.</p>
-    <p class="py-4"><span class="text-warning">Warning: This action is irreversible!</span> If you are sure to continue please complete the input below with the words "delete" followed by a space and the email of the emergency contact you want to delete.</p>
+    <p class="py-4"><span class="text-warning">Warning: This action is irreversible!</span> If you are sure to continue please complete the input below with the word "delete" followed by a space and the email of the emergency contact you want to delete.</p>
 
       <!-- Form -->
       <form class="space-y-4">

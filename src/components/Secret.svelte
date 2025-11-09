@@ -66,9 +66,9 @@
   <div class="flex flex-col md:flex-row items-center justify-between space-y-2 md:space-y-0">
     <div class="flex flex-col items-center md:items-start">
       <span class="text-xl font-bold">{secret.title}</span>
-      <span class="text-sm text-info">
+      <!-- <span class="text-sm text-info">
         Shared with: <span class="text-primary">My contact</span>
-      </span>
+      </span> -->
     </div>
 
     <div class="flex items-center justify-between m-4">

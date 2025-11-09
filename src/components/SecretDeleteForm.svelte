@@ -21,7 +21,7 @@
   <div class="modal-box">
     <h3 class="text-lg font-bold">Secret Deletion</h3>
     <p class="py-4">You are going to delete all the information related to {secretTitle}.</p>
-    <p class="py-4"><span class="text-warning">Warning: This action is irreversible!</span> If you are sure to continue please complete the input below with the words "delete" followed by a space and the title of the secret you want to delete.</p>
+    <p class="py-4"><span class="text-warning">Warning: This action is irreversible!</span> If you are sure to continue please complete the input below with the word "delete" followed by a space and the title of the secret you want to delete.</p>
       
       <!-- Form -->
       <form class="space-y-4">

@@ -140,7 +140,7 @@
             <textarea
             id="notes"
             name="notes"
-            placeholder="Insert additional notes here (max 1024 characters)"
+            placeholder="Insert additional notes here (max 10.000 characters)"
             bind:value={secret_modification.notes}
             class="textarea textarea-bordered textarea-secondary textarea-sm w-full"></textarea>
         </div>
