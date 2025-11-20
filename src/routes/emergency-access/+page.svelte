@@ -7,6 +7,7 @@
     let emergencyFilePath = $state("");
     let emergencyContactPassword = $state("");
     let isPasswordVisible = $state(false);
+    let isEmergencyContactPasswordVisible = $state(false);
 
     let transientSecret = $state<TransientSecret | null>(null);
 
@@ -160,17 +161,33 @@
           <!-- Password Input -->
           <div class="form-control">
             <label class="label" for="password">
-              <span class="label-text">Password</span>
+              <span class="label-text">Master Password</span>
             </label>
+            <div class="join">
             <input 
-              type="password" 
+              type={isEmergencyContactPasswordVisible ? 'text' : 'password'}
               id="password" 
-              name="password" 
+              name="password"
+              autocorrect="off"
+              autocapitalize="off"
+              autocomplete="off"
               required
               placeholder="************" 
-              class="input input-secondary w-full"
+              class="input input-secondary input-bordered join-item w-full font-mono"
               bind:value={emergencyContactPassword}
             />
+              <button
+          class={`btn border-secondary border-solid border-info btn-square join-item ${isEmergencyContactPasswordVisible ? 'text-success' : 'text-error'}`}
+          onclick={() => (isEmergencyContactPasswordVisible = !isEmergencyContactPasswordVisible)}
+          title={isEmergencyContactPasswordVisible ? 'Hide password' : 'Show password'}
+        >
+          {#if isEmergencyContactPasswordVisible}
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
+          {:else}
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          {/if}
+        </button>
+            </div>
           </div>
           
           <!-- Submit Button -->
