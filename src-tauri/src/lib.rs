@@ -66,6 +66,16 @@ struct EmergencyAccessRequest {
 }
 
 #[derive(Serialize,Deserialize)]
+struct EmergencyAccessClientDataRequest {
+    encrypted_data_encryption_key: Vec<u8>,
+    encrypted_ticket_share: Vec<u8>,
+    encrypted_v_share: Vec<u8>,
+    encrypted_a_share: Vec<u8>,
+    encrypted_a : Vec<u8>,
+    password_salt: String,
+}
+
+#[derive(Serialize,Deserialize)]
 struct S2SecretUserUpsertResponse {
     id_user: Uuid
 }
@@ -827,7 +837,7 @@ async fn remove_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2
 }
 
 #[tauri::command]
-async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid, app_handle: tauri::AppHandle) -> Result<(), ()> {
+async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid, send_email: bool, app_handle: tauri::AppHandle) -> Result<(), ()> {
     let state = state.lock().await;
     let mut v = [0u8; 64];
     OsRng.fill_bytes(&mut v);
@@ -868,21 +878,41 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
         return Err(());
     } else {
         let encrypted_data_encryption_key = store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a, &v, &password).await?;
-        let mut save_emergency_file_buffer = Vec::new();
-        let emergency_contact_file_access = EmergencyContactFileAccess {
-            id_emergency_contact,
-            id_secret: secret_id,
-            data_encryption_key: encrypted_data_encryption_key,
-            password_salt: salt,
-            ticket_share: Vec::from(&ticket_shares[0]),
-            v_share: Vec::from(&v_shares[0]),
-            a_share: Vec::from(&a_shares[0]),
-            a: Vec::from(&a),
-        };
-        ciborium::ser::into_writer(&emergency_contact_file_access,&mut save_emergency_file_buffer).map_err(|_| ())?;
-        let emergency_file_path = app_handle.dialog().file().set_file_name("emergency_access.cbor").add_filter("CBOR", &["cbor"]).blocking_save_file().unwrap();
-        let mut emergency_file = File::create(emergency_file_path.as_path().unwrap()).map_err(|_| ())?;
-        emergency_file.write_all(save_emergency_file_buffer.as_slice()).map_err(|_| ())?;
+        let mut buffer = Vec::new();
+        if send_email {
+            let emergency_access_client_data_request = EmergencyAccessClientDataRequest {
+                encrypted_data_encryption_key,
+                password_salt: salt,
+                encrypted_ticket_share: Vec::from(&ticket_shares[0]),
+                encrypted_v_share: Vec::from(&v_shares[0]),
+                encrypted_a_share: Vec::from(&a_shares[0]),
+                encrypted_a: Vec::from(&a)
+            };
+            ciborium::ser::into_writer(&emergency_access_client_data_request,&mut buffer).map_err(|_| ())?;
+            let emergency_access_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/emergency-contacts/{}/send", secret_id, id_emergency_contact))
+                .body(buffer)
+                .send()
+                .await
+                .map_err(|_| ())?;
+            if emergency_access_response.status() != 200 {
+                return Err(());
+            }
+        } else {
+            let emergency_contact_file_access = EmergencyContactFileAccess {
+                id_emergency_contact,
+                id_secret: secret_id,
+                data_encryption_key: encrypted_data_encryption_key,
+                password_salt: salt,
+                ticket_share: Vec::from(&ticket_shares[0]),
+                v_share: Vec::from(&v_shares[0]),
+                a_share: Vec::from(&a_shares[0]),
+                a: Vec::from(&a),
+            };
+            ciborium::ser::into_writer(&emergency_contact_file_access,&mut buffer).map_err(|_| ())?;
+            let emergency_file_path = app_handle.dialog().file().set_file_name("emergency_access.cbor").add_filter("CBOR", &["cbor"]).blocking_save_file().unwrap();
+            let mut emergency_file = File::create(emergency_file_path.as_path().unwrap()).map_err(|_| ())?;
+            emergency_file.write_all(buffer.as_slice()).map_err(|_| ())?;
+        }
         Ok(())
     }
 }

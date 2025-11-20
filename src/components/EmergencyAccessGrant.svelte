@@ -6,6 +6,8 @@
     let {secretId, secretTitle, isOpened, onClose } = $props();
 
     let selectedContactId = $state(null);
+
+    let sendEmail = $state(true);
     
     //let emergencyContacts = $state([{id:"5D03127A-EF34-4DBF-8C26-2B73986F8890", email:"test@example.com"}]);
 
@@ -33,7 +35,7 @@
           <fieldset class="fieldset bg-base-100 border-base-300 rounded-box w-70 border p-4">
             <legend class="fieldset-legend">Share options</legend>
             <label class="label">
-              <input type="checkbox" checked={true} class="toggle toggle-warning" />
+              <input type="checkbox" bind:checked={sendEmail} class="toggle toggle-warning" />
               Send access data to contact by email
             </label>
           </fieldset>
@@ -43,7 +45,7 @@
       <form method="dialog">
         <button onclick={onClose} class="btn">Cancel</button>
       </form>
-      <button class="btn btn-primary" onclick={async () => {await invoke("add_access_to_emergency_contact_for_secret", { idEmergencyContact: selectedContactId, secretId: secretId })}}>Share secret</button>
+      <button class="btn btn-primary" onclick={async () => {await invoke("add_access_to_emergency_contact_for_secret", { idEmergencyContact: selectedContactId, secretId: secretId, sendEmail })}}>Share secret</button>
     </div>
   </div>
 </dialog>
