@@ -402,7 +402,7 @@ async fn create_client_data(state: &mut S2SecretData,app_handle: &tauri::AppHand
         .execute(&mut *transaction)
         .await
         .map_err(|_| ())?;
-    sqlx::query("CREATE TABLE IF NOT EXISTS emergency_contact_access (id_emergency_contact TEXT NOT NULL, id_secret TEXT NOT NULL, data_encryption_key BLOB NOT NULL, ticket_share BLOB NOT NULL, v_share BLOB NOT NULL, a_share BLOB NOT NULL, a BLOB NOT NULL, PRIMARY KEY(id_emergency_contact, id_secret), FOREIGN KEY(id_emergency_contact) REFERENCES emergency_contact(id), FOREIGN KEY(id_secret) REFERENCES secret(id));")
+    sqlx::query("CREATE TABLE IF NOT EXISTS emergency_contact_access (id_emergency_contact TEXT NOT NULL, id_secret TEXT NOT NULL, data_encryption_key BLOB NOT NULL, ticket_share BLOB NOT NULL, v_share BLOB NOT NULL, a_share BLOB NOT NULL, a BLOB NOT NULL, email_notification_enabled INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(id_emergency_contact, id_secret), FOREIGN KEY(id_emergency_contact) REFERENCES emergency_contact(id), FOREIGN KEY(id_secret) REFERENCES secret(id));")
         .execute(&mut *transaction)
         .await
         .map_err(|_| ())?;
@@ -877,7 +877,7 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
     if emergency_access_response.status() != 204 {
         return Err(());
     } else {
-        let encrypted_data_encryption_key = store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a, &v, &password).await?;
+        let encrypted_data_encryption_key = store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a, &v, &password, &send_email).await?;
         let mut buffer = Vec::new();
         if send_email {
             let emergency_access_client_data_request = EmergencyAccessClientDataRequest {
@@ -1032,7 +1032,8 @@ async fn store_local_emergency_access_data(
     a_share: &Share,
     a: &[u8; 64],
     v: &[u8; 64],
-    password: &Vec<u8>
+    password: &Vec<u8>,
+    send_email: &bool,
 ) -> Result<Vec<u8>,()> {
     let mut encryption_key_for_emergency_access = [0u8; 32];
     //let password_salt = password_salt_of_emergency_contact(&state, &emergency_contact_id).await?;
@@ -1040,7 +1041,7 @@ async fn store_local_emergency_access_data(
     let data_encryption_key = data_encryption_key_for_secret(&state, &secret_id).await?;
     let encrypted_data_encryption_key = encrypt(encryption_key_for_emergency_access.as_ref(), data_encryption_key.as_ref()).map_err(|_| ())?;
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
-    sqlx::query("INSERT INTO emergency_contact_access (id_emergency_contact, id_secret, data_encryption_key, ticket_share, v_share, a_share, a) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id_emergency_contact, id_secret) DO UPDATE SET data_encryption_key = excluded.data_encryption_key, ticket_share = excluded.ticket_share, v_share = excluded.v_share, a_share = excluded.a_share, a = excluded.a")
+    sqlx::query("INSERT INTO emergency_contact_access (id_emergency_contact, id_secret, data_encryption_key, ticket_share, v_share, a_share, a, email_notification_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id_emergency_contact, id_secret) DO UPDATE SET data_encryption_key = excluded.data_encryption_key, ticket_share = excluded.ticket_share, v_share = excluded.v_share, a_share = excluded.a_share, a = excluded.a, email_notification_enabled = excluded.email_notification_enabled")
         .bind(emergency_contact_id.to_string())
         .bind(secret_id.to_string())
         .bind(&encrypted_data_encryption_key)
@@ -1048,6 +1049,7 @@ async fn store_local_emergency_access_data(
         .bind(Vec::from(v_share))
         .bind(Vec::from(a_share))
         .bind(&a[..])
+        .bind(send_email)
         .execute(&mut *transaction)
         .await
         .map_err(|_| ())?;
