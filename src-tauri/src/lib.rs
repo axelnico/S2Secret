@@ -221,7 +221,6 @@ pub struct EmergencyContactSecretAccessResponse {
 
 #[derive(Deserialize, Serialize)]
 struct OneTimeSecretCodeRequest {
-    email: String,
     secret_code: String,
 }
 
@@ -300,6 +299,15 @@ struct TransientSecret {
     site: Option<String>,
     notes: Option<String>,
     password: String,
+}
+
+#[derive(Serialize,Deserialize)]
+struct EmergencyContactConfirmationData {
+    v_share: Vec<u8>,
+    data_encryption_key: Vec<u8>,
+    temporal_session_id: String,
+    secret_id: Uuid,
+    emergency_contact_id: Uuid,
 }
 
 
@@ -707,7 +715,7 @@ async fn share_renewal_for_secret(
 async fn send_2fa_secret_code(state: State<'_, Mutex<S2SecretData>>, email: String, one_time_secret_code: String, temporal_session_id: String) -> Result<(), ()> {
     let mut state = state.lock().await;
     let mut buffer = Vec::new();
-    let one_time_secret_code_request = OneTimeSecretCodeRequest { email, secret_code: one_time_secret_code };
+    let one_time_secret_code_request = OneTimeSecretCodeRequest { secret_code: one_time_secret_code };
     ciborium::ser::into_writer(&one_time_secret_code_request, &mut buffer).map_err(|_| ())?;
     let two_factor_response = state.http_client.post("http://localhost:3000/auth/user/2fa")
         .body(buffer)
@@ -751,23 +759,14 @@ async fn share_renewal_for_emergency_access_secret(state: &S2SecretData,secret_i
 }
 
 #[tauri::command]
-async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: String, password: String) -> Result<TransientSecret, ()> {
-    let file = fs::read(emergency_file).map_err(|_| ())?;
-    let emergency_access_data: EmergencyContactFileAccess = ciborium::de::from_reader(file.as_slice()).map_err(|_| ())?;
-    let argon2 = Argon2::default();
-    let password_hash = argon2.hash_password(password.as_ref(), &SaltString::from_b64(&emergency_access_data.password_salt).unwrap()).ok().unwrap().to_string();
-    let mac = HMAC::mac([password_hash.as_bytes(),emergency_access_data.ticket_share.as_slice()].concat(), emergency_access_data.a.as_slice());
-    let emergency_access_request: EmergencyContactSecretAccessRequest = EmergencyContactSecretAccessRequest {
-        password_hash,
-        contact_prover_mac: mac.to_vec(),
-        contact_ticket_share: emergency_access_data.ticket_share,
-        contact_prover_mac_share: emergency_access_data.a_share,
-    };
+async fn send_2fa_emergency_access_secret_code(state: State<'_, Mutex<S2SecretData>>,temporal_session_id: String, one_time_secret_code: String,secret_id: Uuid, emergency_contact_id: Uuid, v_share: Vec<u8>, password: String, data_encryption_key: Vec<u8>) -> Result<TransientSecret, ()> {
+    let state = state.lock().await;
     let mut buffer = Vec::new();
-    ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
-    let http_client = reqwest::Client::new();
-    let emergency_access_response = http_client.post(format!("http://localhost:3000/auth/emergency-contacts/{}/secrets/{}",emergency_access_data.id_emergency_contact, emergency_access_data.id_secret))
+    let one_time_secret_code_request = OneTimeSecretCodeRequest { secret_code: one_time_secret_code };
+    ciborium::ser::into_writer(&one_time_secret_code_request, &mut buffer).map_err(|_| ())?;
+    let emergency_access_response = state.http_client.post(format!("http://localhost:3000/auth/emergency-contacts/{}/secrets/{}/2fa",emergency_contact_id, secret_id))
         .body(buffer)
+        .header("session-id", &temporal_session_id)
         .send()
         .await
         .map_err(|_| ())?;
@@ -777,13 +776,13 @@ async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: St
         let emergency_access_response_bytes = emergency_access_response.bytes().await.map_err(|_| ())?;
         let recovered_secret: EmergencyContactSecretAccessResponse = ciborium::de::from_reader(emergency_access_response_bytes.as_ref()).map_err(|_| ())?;
         let sharks = Sharks(2);
-        let contact_v_share = Share::try_from(emergency_access_data.v_share.as_slice()).map_err(|_| ())?;
+        let contact_v_share = Share::try_from(v_share.as_slice()).map_err(|_| ())?;
         let server_v_share = Share::try_from(recovered_secret.server_v.as_slice()).map_err(|_| ())?;
         let v = sharks.recover([&contact_v_share, &server_v_share]).ok().unwrap_or_default();
         let mut key_encryption_key = [0u8; 32];
         //let mut encryption_key_for_secret_descriptive_data = [0u8; 32];
         Argon2::default().hash_password_into(password.as_ref(), &v, &mut key_encryption_key).ok().unwrap();
-        let data_encryption_key = decrypt(&key_encryption_key, &emergency_access_data.data_encryption_key).map_err(|_| ())?;
+        let data_encryption_key = decrypt(&key_encryption_key, &data_encryption_key).map_err(|_| ())?;
         //Argon2::default().hash_password_into(password.as_ref(), emergency_access_data.password_salt.as_bytes(), &mut encryption_key_for_secret_descriptive_data).ok().unwrap();
         let decrypted_title = decrypt(&data_encryption_key, &recovered_secret.title).map_err(|_| ())?;
         let title = String::from_utf8(decrypted_title).map_err(|_| ())?;
@@ -810,6 +809,40 @@ async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: St
             site,
             notes,
             password,
+        })
+    }
+}
+
+#[tauri::command]
+async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: String, password: String) -> Result<EmergencyContactConfirmationData, ()> {
+    let file = fs::read(emergency_file).map_err(|_| ())?;
+    let emergency_access_data: EmergencyContactFileAccess = ciborium::de::from_reader(file.as_slice()).map_err(|_| ())?;
+    let argon2 = Argon2::default();
+    let password_hash = argon2.hash_password(password.as_ref(), &SaltString::from_b64(&emergency_access_data.password_salt).unwrap()).ok().unwrap().to_string();
+    let mac = HMAC::mac([password_hash.as_bytes(),emergency_access_data.ticket_share.as_slice()].concat(), emergency_access_data.a.as_slice());
+    let emergency_access_request: EmergencyContactSecretAccessRequest = EmergencyContactSecretAccessRequest {
+        password_hash,
+        contact_prover_mac: mac.to_vec(),
+        contact_ticket_share: emergency_access_data.ticket_share,
+        contact_prover_mac_share: emergency_access_data.a_share,
+    };
+    let mut buffer = Vec::new();
+    ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
+    let http_client = reqwest::Client::new();
+    let emergency_access_response = http_client.post(format!("http://localhost:3000/auth/emergency-contacts/{}/secrets/{}",emergency_access_data.id_emergency_contact, emergency_access_data.id_secret))
+        .body(buffer)
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if emergency_access_response.status() != 200 {
+        return Err(());
+    } else {
+        Ok(EmergencyContactConfirmationData {
+            emergency_contact_id: emergency_access_data.id_emergency_contact,
+            secret_id: emergency_access_data.id_secret,
+            temporal_session_id: emergency_access_response.headers().get("session-id").unwrap().to_str().map_err(|_| ())?.to_string(),
+            v_share: emergency_access_data.v_share,
+            data_encryption_key: emergency_access_data.data_encryption_key,
         })
     }
 }
@@ -1569,6 +1602,7 @@ pub fn run() {
             renew_share,
             recover_secret,
             copy_to_clipboard,
+            send_2fa_emergency_access_secret_code,
             ])
         .run(tauri::generate_context!())
         .expect("error while running S2Secret application");

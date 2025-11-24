@@ -19,3 +19,10 @@ export let emergencyAccesses = $state({accesses: [] as EmergencyAccess[]});
 export const setEmergencyAccesses = (newAccesses: EmergencyAccess[]) => {
     emergencyAccesses.accesses = newAccesses;
 }
+
+export const preEmergencyAccessData = $state({secretId:"",
+                                              emergencyContactId:"",
+                                              temporalSessionId:"",
+                                              password:"",
+                                              vShare: null as Uint8Array | null,
+                                              dataEncryptionKey: null as Uint8Array | null});
