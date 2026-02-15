@@ -68,7 +68,7 @@
           <!-- Password Input -->
           <div class="form-control">
             <label class="label" for="password">
-              <span class="label-text">Master Password</span>
+              <span class="label-text">Password</span>
             </label>
             <div class="join">
             <input 
