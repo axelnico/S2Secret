@@ -83,6 +83,7 @@
               autocorrect="off"
               autocapitalize="off"
               autocomplete="off"
+              maxlength="256"
               readonly
               required
               class="border-none w-full input input-secondary join-item font-mono focus:outline-none"

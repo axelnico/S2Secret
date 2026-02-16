@@ -56,6 +56,7 @@
             type="text" 
             id="title" 
             name="title"
+            maxlength="64"
             autocapitalize="off"
             autocomplete="off"
             required
@@ -75,6 +76,7 @@
               name="username" 
               placeholder="@username"
               autocapitalize="off"
+              maxlength="256"
               autocomplete="off"
               class="input input-secondary w-full"
               bind:value={secret_modification.userName}
@@ -90,6 +92,7 @@
               id="site"
               autocapitalize="off"
               autocomplete="off"
+              maxlength="1024"
               name="site" 
               placeholder="https://example.com" 
               class="input input-secondary w-full"
@@ -140,6 +143,7 @@
             <textarea
             id="notes"
             name="notes"
+            maxlength="10000"
             placeholder="Insert additional notes here (max 10.000 characters)"
             bind:value={secret_modification.notes}
             class="textarea textarea-bordered textarea-secondary textarea-sm w-full"></textarea>
