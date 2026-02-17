@@ -349,7 +349,7 @@ async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_handle: tauri::
     };
     ciborium::ser::into_writer(&registration_request,&mut buffer).map_err(|_| ())?;
     let http_client = reqwest::Client::new();
-    let registration_initial_response = http_client.post("http://localhost:3000/auth/user/register")
+    let registration_initial_response = http_client.post("https://localhost:3000/auth/user/register")
         .body(buffer)
         .send()
         .await
@@ -368,7 +368,7 @@ async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_handle: tauri::
         message: registration_finish_bytes.clone(),
     };
     ciborium::ser::into_writer(&registration_finish_request,&mut buffer).map_err(|_| ())?;
-    let registration_final_response = http_client.post("http://localhost:3000/auth/user/register-finalize")
+    let registration_final_response = http_client.post("https://localhost:3000/auth/user/register-finalize")
         .body(buffer)
         .send()
         .await
@@ -431,7 +431,7 @@ async fn create_client_data(state: &mut S2SecretData,app_handle: &tauri::AppHand
 async fn logged_user_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
     let user_id = user_id_for_user(&state).await?;
-    let user_data = state.http_client.get("http://localhost:3000/user")
+    let user_data = state.http_client.get("https://localhost:3000/user")
         .send()
         .await
         .map_err(|_| ())?;
@@ -461,21 +461,12 @@ async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     state.session_key.zeroize();
     state.password_encryption_key.zeroize();
     state.passwords.clear();
-    state.http_client.post("http://localhost:3000/auth/user/logout")
+    state.http_client.post("https://localhost:3000/auth/user/logout")
     .send()
     .await
     .map_err(|_| ())?;
     state.session_id = None;
     state.http_client = reqwest_middleware::ClientWithMiddleware::default();
-    //let http_client = reqwest::Client::new();
-    //#if let Some(session_id) = state.session_id {
-    //    http_client.post("http://localhost:3000/auth/user/logout")
-    //    .header("session-id", &session_id.to_string())
-    //    .send()
-    //    .await
-    //    .map_err(|_| ())?;
-    //    state.session_id = None;
-    //}
     Ok("User logged out successfully".to_string())
 }
 
@@ -512,7 +503,21 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
     let mut client_rng = OsRng;
     let client_login_start_result = ClientLogin::<DefaultCipherSuite>::start(&mut client_rng, [master_password.as_bytes(),&login_parameters.client_pepper].concat().as_ref()).unwrap();
     let login_request_bytes = client_login_start_result.message;
-    let http_client = reqwest::Client::new();
+    let mut client_http_client_builder = Client::builder().use_rustls_tls().https_only(true).min_tls_version(reqwest::tls::Version::TLS_1_3);
+    #[cfg(debug_assertions)]
+    {
+        // Embed the certificate at compile time
+        // This path is relative to the `src-tauri/src` file
+        let cert_bytes = include_bytes!("../self_signed_certs/rootCA.pem"); 
+        
+        // Parse and add as root certificate
+        let cert = reqwest::Certificate::from_pem(cert_bytes)
+            .expect("Failed to parse dev certificate");
+            
+        client_http_client_builder = client_http_client_builder
+            .add_root_certificate(cert);
+    }
+    let http_client = client_http_client_builder.build().unwrap();
     let mut buffer = Vec::new();
     let login_initial_request: LoginInitialRequest = LoginInitialRequest {
         client_identifier: login_parameters.client_identifier,
@@ -520,7 +525,7 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
         message: login_request_bytes.clone(),
     };
     ciborium::ser::into_writer(&login_initial_request,&mut buffer).map_err(|_| ())?;
-    let login_initial_response = http_client.post("http://localhost:3000/auth/user/login")
+    let login_initial_response = http_client.post("https://localhost:3000/auth/user/login")
     .body(buffer)
         .send()
         .await
@@ -549,7 +554,7 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
         message: client_login_finish_result.message.clone(),
     };
     ciborium::ser::into_writer(&login_final_request,&mut buffer).map_err(|_| ())?;
-    let client_final_response = http_client.post("http://localhost:3000/auth/user/login-finalize")
+    let client_final_response = http_client.post("https://localhost:3000/auth/user/login-finalize")
         .body(buffer)
         .header("session-id", &temp_session_id)
         .send()
@@ -620,7 +625,7 @@ async fn recover_password(
     let client_share = Share::try_from(client_share.as_slice()).map_err(|_| ())?;
     let padding_characters_count = decrypt(&data_encryption_key, row.get(1)).map_err(|_| ())?;
     let buffer = Vec::new();
-    let server_share_response = state.http_client.get(format!("http://localhost:3000/secrets/{}/share", secret_id))
+    let server_share_response = state.http_client.get(format!("https://localhost:3000/secrets/{}/share", secret_id))
         .body(buffer)
         .send()
         .await
@@ -694,7 +699,7 @@ async fn share_renewal_for_secret(
         updated_at: NaiveDateTime::from_timestamp(row.get(2), 0),
     };
     ciborium::ser::into_writer(&client_share_renewal_request,&mut buffer).map_err(|_| ())?;
-    let server_share_renewal_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/renew-share", &secret_id))
+    let server_share_renewal_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/renew-share", &secret_id))
         .body(buffer)
         .send()
         .await
@@ -717,7 +722,7 @@ async fn send_2fa_secret_code(state: State<'_, Mutex<S2SecretData>>, email: Stri
     let mut buffer = Vec::new();
     let one_time_secret_code_request = OneTimeSecretCodeRequest { secret_code: one_time_secret_code };
     ciborium::ser::into_writer(&one_time_secret_code_request, &mut buffer).map_err(|_| ())?;
-    let two_factor_response = state.http_client.post("http://localhost:3000/auth/user/2fa")
+    let two_factor_response = state.http_client.post("https://localhost:3000/auth/user/2fa")
         .body(buffer)
         .header("session-id", &temporal_session_id)
         .send()
@@ -728,7 +733,21 @@ async fn send_2fa_secret_code(state: State<'_, Mutex<S2SecretData>>, email: Stri
     }
     let session_id = two_factor_response.headers().get("session-id").unwrap().clone();
     state.session_id = Some(uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap());
-    let http_client = Client::builder().build().unwrap();
+    let mut client_http_client_builder = Client::builder().use_rustls_tls().https_only(true).min_tls_version(reqwest::tls::Version::TLS_1_3);
+    #[cfg(debug_assertions)] 
+    {
+        // Embed the certificate at compile time
+        // This path is relative to the `src-tauri/src` file
+        let cert_bytes = include_bytes!("../self_signed_certs/rootCA.pem"); 
+        
+        // Parse and add as root certificate
+        let cert = reqwest::Certificate::from_pem(cert_bytes)
+            .expect("Failed to parse dev certificate");
+            
+        client_http_client_builder = client_http_client_builder
+            .add_root_certificate(cert);
+    }
+    let http_client = client_http_client_builder.build().unwrap();
     state.http_client = ClientBuilder::new(http_client)
     .with(SecureSessionMiddleware {
         session_id: uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap(),
@@ -764,7 +783,7 @@ async fn send_2fa_emergency_access_secret_code(state: State<'_, Mutex<S2SecretDa
     let mut buffer = Vec::new();
     let one_time_secret_code_request = OneTimeSecretCodeRequest { secret_code: one_time_secret_code };
     ciborium::ser::into_writer(&one_time_secret_code_request, &mut buffer).map_err(|_| ())?;
-    let emergency_access_response = state.http_client.post(format!("http://localhost:3000/auth/emergency-contacts/{}/secrets/{}/2fa",emergency_contact_id, secret_id))
+    let emergency_access_response = state.http_client.post(format!("https://localhost:3000/auth/emergency-contacts/{}/secrets/{}/2fa",emergency_contact_id, secret_id))
         .body(buffer)
         .header("session-id", &temporal_session_id)
         .send()
@@ -829,7 +848,7 @@ async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: St
     let mut buffer = Vec::new();
     ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
     let http_client = reqwest::Client::new();
-    let emergency_access_response = http_client.post(format!("http://localhost:3000/auth/emergency-contacts/{}/secrets/{}",emergency_access_data.id_emergency_contact, emergency_access_data.id_secret))
+    let emergency_access_response = http_client.post(format!("https://localhost:3000/auth/emergency-contacts/{}/secrets/{}",emergency_access_data.id_emergency_contact, emergency_access_data.id_secret))
         .body(buffer)
         .send()
         .await
@@ -850,7 +869,7 @@ async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: St
 #[tauri::command]
 async fn remove_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid) -> Result<(), ()> {
     let state = state.lock().await;
-    let response = state.http_client.delete(format!("http://localhost:3000/secrets/{}/emergency-contacts/{}", secret_id, id_emergency_contact))
+    let response = state.http_client.delete(format!("https://localhost:3000/secrets/{}/emergency-contacts/{}", secret_id, id_emergency_contact))
         .send()
         .await
         .map_err(|_| ())?;
@@ -902,7 +921,7 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
         server_a: Vec::from(&a_shares[1]),
     };
     ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
-    let emergency_access_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/emergency-contacts", secret_id))
+    let emergency_access_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/emergency-contacts", secret_id))
         .body(buffer)
         .send()
         .await
@@ -922,7 +941,7 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
                 encrypted_a: Vec::from(&a)
             };
             ciborium::ser::into_writer(&emergency_access_client_data_request,&mut buffer).map_err(|_| ())?;
-            let emergency_access_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/emergency-contacts/{}/send", secret_id, id_emergency_contact))
+            let emergency_access_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/emergency-contacts/{}/send", secret_id, id_emergency_contact))
                 .body(buffer)
                 .send()
                 .await
@@ -1171,7 +1190,7 @@ async fn delete_local_emergency_contact(
 async fn delete_secret(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -> Result<String, ()> {
     let mut state = state.lock().await;
     delete_local_share(&state, &secret_id).await.map_err(|_| ())?;
-    let delete_secret_response = state.http_client.delete(format!("http://localhost:3000/secrets/{}", &secret_id))
+    let delete_secret_response = state.http_client.delete(format!("https://localhost:3000/secrets/{}", &secret_id))
         .send()
         .await
         .map_err(|_| ())?;
@@ -1187,7 +1206,7 @@ async fn delete_secret(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -
 async fn delete_emergency_contact(state: State<'_, Mutex<S2SecretData>>, emergency_contact_id: Uuid) -> Result<String, ()> {
     let mut state = state.lock().await;
     delete_local_emergency_contact(&state, &emergency_contact_id).await.map_err(|_| ())?;
-    let delete_emergency_contact_response = state.http_client.delete(format!("http://localhost:3000/user/emergency-contacts/{}", &emergency_contact_id))
+    let delete_emergency_contact_response = state.http_client.delete(format!("https://localhost:3000/user/emergency-contacts/{}", &emergency_contact_id))
         .send()
         .await
         .map_err(|_| ())?;
@@ -1228,7 +1247,7 @@ async fn renew_shares(state: State<'_, Mutex<S2SecretData>>) -> Result<String, (
 #[tauri::command]
 async fn load_secret_descriptive_data(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -> Result<String, ()> {
     let mut state = state.lock().await;
-    let secret_response = state.http_client.get(format!("http://localhost:3000/secrets/{}", secret_id))
+    let secret_response = state.http_client.get(format!("https://localhost:3000/secrets/{}", secret_id))
         .send()
         .await
         .map_err(|_| ())?;
@@ -1282,7 +1301,7 @@ async fn secret_descriptive_data(state: &S2SecretData, secret: &Secret) -> Resul
 #[tauri::command]
 async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
-    let secrets_response = state.http_client.get(format!("http://localhost:3000/secrets"))
+    let secrets_response = state.http_client.get(format!("https://localhost:3000/secrets"))
         .send()
         .await
         .map_err(|_| ())?;
@@ -1303,7 +1322,7 @@ async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2SecretData>>) ->
 #[tauri::command]
 async fn load_emergency_contacts(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
-    let emergency_contacts_response = state.http_client.get(format!("http://localhost:3000/user/emergency-contacts"))
+    let emergency_contacts_response = state.http_client.get(format!("https://localhost:3000/user/emergency-contacts"))
         .send()
         .await
         .map_err(|_| ())?;
@@ -1384,7 +1403,7 @@ async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: String, user_n
         notes,
     ).await?;
     ciborium::ser::into_writer(&new_secret_request,&mut buffer).map_err(|_| ())?;
-    let add_secret_response = state.http_client.post("http://localhost:3000/secrets")
+    let add_secret_response = state.http_client.post("https://localhost:3000/secrets")
         .body(buffer)
         .send()
         .await
@@ -1444,7 +1463,7 @@ async fn disable_proactive_protection(
     secret_id: Uuid,
 ) -> Result<(), ()> {
     let mut state = state.lock().await;
-    let protection_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/disable-proactive-protection", secret_id))
+    let protection_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/disable-proactive-protection", secret_id))
         .send()
         .await
         .map_err(|_| ())?;
@@ -1475,7 +1494,7 @@ async fn add_emergency_contact(
         description,
         server_share: Vec::from(&password_shares[1])
     }, &mut buffer).map_err(|_| ())?;
-    let contact_response = state.http_client.post("http://localhost:3000/user/emergency-contacts")
+    let contact_response = state.http_client.post("https://localhost:3000/user/emergency-contacts")
         .body(buffer)
         .send()
         .await
@@ -1506,7 +1525,7 @@ async fn enable_proactive_protection(
     let mut state = state.lock().await;
     let mut buffer = Vec::new();
     ciborium::ser::into_writer(&proactive_protection,&mut buffer).map_err(|_| ())?;
-    let protection_response = state.http_client.post(format!("http://localhost:3000/secrets/{}/enable-proactive-protection", secret_id))
+    let protection_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/enable-proactive-protection", secret_id))
         .body(buffer)
         .send()
         .await
@@ -1538,7 +1557,7 @@ async fn update_secret(state: State<'_, Mutex<S2SecretData>>, id: Uuid, title: S
         notes,
     ).await?;
     ciborium::ser::into_writer(&secret_update_request,&mut buffer).map_err(|_| ())?;
-    let update_secret_response = state.http_client.put(format!("http://localhost:3000/secrets/{}", id))
+    let update_secret_response = state.http_client.put(format!("https://localhost:3000/secrets/{}", id))
         .body(buffer)
         .send()
         .await
