@@ -171,6 +171,41 @@ struct S2SecretData {
     emergency_contacts: HashMap<Uuid, EmergencyContact>,
 }
 
+fn https_client() -> Client {
+    let mut https_client_builder = Client::builder().use_rustls_tls().https_only(true).min_tls_version(reqwest::tls::Version::TLS_1_3);
+    #[cfg(debug_assertions)]
+    {
+        // Embed the certificate at compile time
+        // This path is relative to the `src-tauri/src` file
+        let cert_bytes = include_bytes!("../self_signed_certs/rootCA.pem"); 
+        
+        // Parse and add as root certificate
+        let cert = reqwest::Certificate::from_pem(cert_bytes)
+            .expect("Failed to parse dev certificate");
+            
+        https_client_builder = https_client_builder
+            .add_root_certificate(cert);
+    }
+    https_client_builder.build().unwrap()
+}
+
+impl S2SecretData {
+    pub fn new() -> Self {
+         S2SecretData {
+            user_id: None,
+            user_name: None,
+            user_email: None,
+            session_id: None,
+            session_key: SecretBox::default(),
+            password_encryption_key: SecretBox::default(),
+            http_client: reqwest_middleware::ClientWithMiddleware::new(https_client(), vec![]),
+            client_local_data_path: String::default(),
+            passwords: HashMap::default(),
+            emergency_contacts: HashMap::default(),
+        }
+    }
+}
+
 #[derive(Serialize,Deserialize)]
 struct LoginInitialRequest {
     client_identifier: uuid::Uuid,
@@ -503,21 +538,6 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
     let mut client_rng = OsRng;
     let client_login_start_result = ClientLogin::<DefaultCipherSuite>::start(&mut client_rng, [master_password.as_bytes(),&login_parameters.client_pepper].concat().as_ref()).unwrap();
     let login_request_bytes = client_login_start_result.message;
-    let mut client_http_client_builder = Client::builder().use_rustls_tls().https_only(true).min_tls_version(reqwest::tls::Version::TLS_1_3);
-    #[cfg(debug_assertions)]
-    {
-        // Embed the certificate at compile time
-        // This path is relative to the `src-tauri/src` file
-        let cert_bytes = include_bytes!("../self_signed_certs/rootCA.pem"); 
-        
-        // Parse and add as root certificate
-        let cert = reqwest::Certificate::from_pem(cert_bytes)
-            .expect("Failed to parse dev certificate");
-            
-        client_http_client_builder = client_http_client_builder
-            .add_root_certificate(cert);
-    }
-    let http_client = client_http_client_builder.build().unwrap();
     let mut buffer = Vec::new();
     let login_initial_request: LoginInitialRequest = LoginInitialRequest {
         client_identifier: login_parameters.client_identifier,
@@ -525,7 +545,7 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
         message: login_request_bytes.clone(),
     };
     ciborium::ser::into_writer(&login_initial_request,&mut buffer).map_err(|_| ())?;
-    let login_initial_response = http_client.post("https://localhost:3000/auth/user/login")
+    let login_initial_response = state.http_client.post("https://localhost:3000/auth/user/login")
     .body(buffer)
         .send()
         .await
@@ -554,7 +574,7 @@ async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, master_pass
         message: client_login_finish_result.message.clone(),
     };
     ciborium::ser::into_writer(&login_final_request,&mut buffer).map_err(|_| ())?;
-    let client_final_response = http_client.post("https://localhost:3000/auth/user/login-finalize")
+    let client_final_response = state.http_client.post("https://localhost:3000/auth/user/login-finalize")
         .body(buffer)
         .header("session-id", &temp_session_id)
         .send()
@@ -733,22 +753,7 @@ async fn send_2fa_secret_code(state: State<'_, Mutex<S2SecretData>>, email: Stri
     }
     let session_id = two_factor_response.headers().get("session-id").unwrap().clone();
     state.session_id = Some(uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap());
-    let mut client_http_client_builder = Client::builder().use_rustls_tls().https_only(true).min_tls_version(reqwest::tls::Version::TLS_1_3);
-    #[cfg(debug_assertions)] 
-    {
-        // Embed the certificate at compile time
-        // This path is relative to the `src-tauri/src` file
-        let cert_bytes = include_bytes!("../self_signed_certs/rootCA.pem"); 
-        
-        // Parse and add as root certificate
-        let cert = reqwest::Certificate::from_pem(cert_bytes)
-            .expect("Failed to parse dev certificate");
-            
-        client_http_client_builder = client_http_client_builder
-            .add_root_certificate(cert);
-    }
-    let http_client = client_http_client_builder.build().unwrap();
-    state.http_client = ClientBuilder::new(http_client)
+    state.http_client = ClientBuilder::new(https_client())
     .with(SecureSessionMiddleware {
         session_id: uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap(),
         session_key: SecretBox::new(Box::new(state.session_key.expose_secret().as_ref().unwrap().clone()))
@@ -1580,7 +1585,7 @@ async fn update_secret(state: State<'_, Mutex<S2SecretData>>, id: Uuid, title: S
 pub fn run() {
     Builder::default()
         .setup(|app| {
-            app.manage(Mutex::new(S2SecretData::default()));
+            app.manage(Mutex::new(S2SecretData::new()));
             Ok(())
         })
         .plugin(tauri_plugin_http::init())
