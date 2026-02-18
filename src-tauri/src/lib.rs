@@ -172,7 +172,11 @@ struct S2SecretData {
 }
 
 fn https_client() -> Client {
-    let mut https_client_builder = Client::builder().use_rustls_tls().https_only(true).min_tls_version(reqwest::tls::Version::TLS_1_3);
+    let mut https_client_builder = Client::builder()
+                                    .use_rustls_tls()
+                                    .https_only(true)
+                                    .http2_prior_knowledge()
+                                    .min_tls_version(reqwest::tls::Version::TLS_1_3);
     #[cfg(debug_assertions)]
     {
         // Embed the certificate at compile time
