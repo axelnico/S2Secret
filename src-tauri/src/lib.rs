@@ -387,8 +387,7 @@ async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_handle: tauri::
         message: registration_request_bytes.clone(),
     };
     ciborium::ser::into_writer(&registration_request,&mut buffer).map_err(|_| ())?;
-    let http_client = reqwest::Client::new();
-    let registration_initial_response = http_client.post("https://localhost:3000/auth/user/register")
+    let registration_initial_response = state.http_client.post("https://localhost:3000/auth/user/register")
         .body(buffer)
         .send()
         .await
@@ -407,7 +406,7 @@ async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_handle: tauri::
         message: registration_finish_bytes.clone(),
     };
     ciborium::ser::into_writer(&registration_finish_request,&mut buffer).map_err(|_| ())?;
-    let registration_final_response = http_client.post("https://localhost:3000/auth/user/register-finalize")
+    let registration_final_response = state.http_client.post("https://localhost:3000/auth/user/register-finalize")
         .body(buffer)
         .send()
         .await
@@ -505,7 +504,7 @@ async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     .await
     .map_err(|_| ())?;
     state.session_id = None;
-    state.http_client = reqwest_middleware::ClientWithMiddleware::default();
+    state.http_client = reqwest_middleware::ClientWithMiddleware::new(https_client(), vec![]);
     Ok("User logged out successfully".to_string())
 }
 
@@ -843,6 +842,7 @@ async fn send_2fa_emergency_access_secret_code(state: State<'_, Mutex<S2SecretDa
 
 #[tauri::command]
 async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: String, password: String) -> Result<EmergencyContactConfirmationData, ()> {
+    let state = state.lock().await;
     let file = fs::read(emergency_file).map_err(|_| ())?;
     let emergency_access_data: EmergencyContactFileAccess = ciborium::de::from_reader(file.as_slice()).map_err(|_| ())?;
     let argon2 = Argon2::default();
@@ -856,8 +856,7 @@ async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergency_file: St
     };
     let mut buffer = Vec::new();
     ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
-    let http_client = reqwest::Client::new();
-    let emergency_access_response = http_client.post(format!("https://localhost:3000/auth/emergency-contacts/{}/secrets/{}",emergency_access_data.id_emergency_contact, emergency_access_data.id_secret))
+    let emergency_access_response = state.http_client.post(format!("https://localhost:3000/auth/emergency-contacts/{}/secrets/{}",emergency_access_data.id_emergency_contact, emergency_access_data.id_secret))
         .body(buffer)
         .send()
         .await
