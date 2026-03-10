@@ -9,7 +9,14 @@
 
     let sendEmail = $state(true);
     
-    //let emergencyContacts = $state([{id:"5D03127A-EF34-4DBF-8C26-2B73986F8890", email:"test@example.com"}]);
+    async function addEmergencyAccess() {
+      if (selectedContactId) {
+        const emergency_secret_access_response = await invoke("add_access_to_emergency_contact_for_secret", { idEmergencyContact: selectedContactId, secretId, sendEmail });
+        selectedContactId = null;
+        sendEmail = true;
+        onClose();
+      }
+    }
 
 </script>
 
@@ -45,7 +52,7 @@
       <form method="dialog">
         <button onclick={onClose} class="btn">Cancel</button>
       </form>
-      <button class="btn btn-primary" onclick={async () => {await invoke("add_access_to_emergency_contact_for_secret", { idEmergencyContact: selectedContactId, secretId: secretId, sendEmail })}}>Share secret</button>
+      <button class="btn btn-primary" onclick={addEmergencyAccess}>Share secret</button>
     </div>
   </div>
 </dialog>

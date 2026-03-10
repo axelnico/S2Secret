@@ -954,7 +954,7 @@ async fn add_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2Sec
                 .send()
                 .await
                 .map_err(|_| ())?;
-            if emergency_access_response.status() != 200 {
+            if emergency_access_response.status() != 204 {
                 return Err(());
             }
         } else {
