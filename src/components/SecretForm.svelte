@@ -36,7 +36,18 @@
        }
     }
 
-
+    $effect(() => {
+        if (isOpened) {
+            secret_modification = {
+                id: secret?.id || "",
+                title: secret?.title || "",
+                userName: secret?.user_name || "",
+                site: secret?.site || "",
+                password: secret?.password || "",
+                notes: secret?.notes || ""
+            };
+        }
+    });
 
 </script>
 
