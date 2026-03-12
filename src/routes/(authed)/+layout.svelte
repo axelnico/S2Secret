@@ -1,13 +1,16 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
     import { invoke } from "@tauri-apps/api/core";
+    import { userData } from "../../state/user.svelte";
   interface Props {
     children?: import('svelte').Snippet;
+    data: { userName: string };
   }
 
-  let { children }: Props = $props();
+  let { children, data }: Props = $props();
 
-  let userName = $state("user_name");
+
+  userData.name = data.userName;
 
   async function logout() {
       await invoke("logout");
@@ -43,7 +46,7 @@
         </div>
       </div></li>
       <li>
-        <h2 class="menu-title">Welcome UserName</h2>
+        <h2 class="menu-title">Welcome {userData.name}</h2>
       <!-- Sidebar content here -->
       <li>
         <a href="secrets">
