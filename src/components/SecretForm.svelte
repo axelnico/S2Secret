@@ -36,17 +36,15 @@
        }
     }
 
-    //secret_modification.password = await invoke<string>("reveal_password", { secretId: secret_modification.id })
 
 
 </script>
 
 <dialog id="secret-data-modal-{secret_modification.id}" class="modal modal-bottom sm:modal-middle" class:modal-open={isOpened}>
   <div class="modal-box">
+  <form class="space-y-4" method="dialog" onsubmit={() => onSave(secret_modification)}>
     <h3 class="text-lg font-bold">Secret Data</h3>
       
-      <!-- Form -->
-      <form class="space-y-4">
         
         <div class="form-control">
           <label class="label" for="title">
@@ -123,6 +121,7 @@
               bind:value={secret_modification.password}
             />
               <button
+           type="button"
           class={`btn border-secondary border-solid border-info btn-square join-item ${isPasswordVisible ? 'text-success' : 'text-error'}`}
           onclick={() => (isPasswordVisible = !isPasswordVisible)}
           title={isPasswordVisible ? 'Hide password' : 'Show password'}
@@ -149,12 +148,11 @@
             class="textarea textarea-bordered textarea-secondary textarea-sm w-full"></textarea>
         </div>
         
-      </form>
+
     <div class="modal-action">
-      <form method="dialog">
-        <button class="btn" onclick={() => onClose()}>Cancel</button>
-      </form>
-      <button class="btn btn-primary" onclick={() => onSave(secret_modification)}>Save</button>
+        <button type="button" class="btn" onclick={() => onClose()}>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save</button>
     </div>
+          </form>
   </div>
 </dialog>
