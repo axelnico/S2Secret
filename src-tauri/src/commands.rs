@@ -70,9 +70,7 @@ pub(crate) async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_hand
         message: registration_request_bytes.clone(),
     };
     ciborium::ser::into_writer(&registration_request,&mut buffer).map_err(|_| ())?;
-    let registration_initial_response = state.http_client.post("https://localhost:3000/auth/user/register")
-        .body(buffer)
-        .send()
+    let registration_initial_response = state.api_client.post("/auth/user/register", buffer)
         .await
         .map_err(|_| ())?;
     if registration_initial_response.status() != 200 {
@@ -89,13 +87,11 @@ pub(crate) async fn register_user(state: State<'_, Mutex<S2SecretData>>,app_hand
         message: registration_finish_bytes.clone(),
     };
     ciborium::ser::into_writer(&registration_finish_request,&mut buffer).map_err(|_| ())?;
-    let registration_final_response = state.http_client.post("https://localhost:3000/auth/user/register-finalize")
-        .body(buffer)
-        .send()
+    let registration_final_response = state.api_client.post("/auth/user/register-finalize", buffer)
         .await
         .map_err(|_| ())?;
     if registration_final_response.status() != 201 {
-        return Err(());
+        Err(())
     } else {
         let registration_final_response_bytes = registration_final_response.bytes().await.map_err(|_| ())?;
         let _new_user_id_response: S2SecretUserUpsertResponse = ciborium::de::from_reader(registration_final_response_bytes.as_ref()).map_err(|_| ())?;
@@ -152,8 +148,7 @@ async fn create_client_data(state: &mut S2SecretData,app_handle: &tauri::AppHand
 pub(crate) async fn logged_user_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
     let user_id = user_id_for_user(&state).await?;
-    let user_data = state.http_client.get("https://localhost:3000/user")
-        .send()
+    let user_data = state.api_client.get("/user")
         .await
         .map_err(|_| ())?;
     if user_data.status() != 200 {
@@ -182,12 +177,11 @@ pub(crate) async fn logout(state: State<'_, Mutex<S2SecretData>>) -> Result<Stri
     state.session_key.zeroize();
     state.password_encryption_key.zeroize();
     state.passwords.clear();
-    state.http_client.post("https://localhost:3000/auth/user/logout")
-    .send()
+    state.api_client.post_empty("/auth/user/logout")
     .await
     .map_err(|_| ())?;
     state.session_id = None;
-    state.http_client = reqwest_middleware::ClientWithMiddleware::new(https_client(), vec![]);
+    state.api_client.client = reqwest_middleware::ClientWithMiddleware::new(https_client(), vec![]);
     Ok("User logged out successfully".to_string())
 }
 
@@ -230,9 +224,7 @@ pub(crate) async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, 
         message: login_request_bytes.clone(),
     };
     ciborium::ser::into_writer(&login_initial_request,&mut buffer).map_err(|_| ())?;
-    let login_initial_response = state.http_client.post("https://localhost:3000/auth/user/login")
-    .body(buffer)
-        .send()
+    let login_initial_response = state.api_client.post("/auth/user/login", buffer)
         .await
         .map_err(|_| ())?;
     if login_initial_response.status() != 200 {
@@ -259,10 +251,7 @@ pub(crate) async fn login(state: State<'_, Mutex<S2SecretData>>, email: String, 
         message: client_login_finish_result.message.clone(),
     };
     ciborium::ser::into_writer(&login_final_request,&mut buffer).map_err(|_| ())?;
-    let client_final_response = state.http_client.post("https://localhost:3000/auth/user/login-finalize")
-        .body(buffer)
-        .header("session-id", &temp_session_id)
-        .send()
+    let client_final_response = state.api_client.post_with_headers("/auth/user/login-finalize", buffer, temp_session_id.to_str().unwrap())
         .await
         .map_err(|_| ())?;
     if client_final_response.status() != 200 {
@@ -289,7 +278,7 @@ async fn recover_emergency_contact_password(state: &S2SecretData,emergency_conta
     let client_share = cryptography::decrypt(&data_encryption_key, row.get(0)).map_err(|_| ())?;  
     let client_share = Share::try_from(client_share.as_slice()).map_err(|_| ())?;
     let server_share = Share::try_from(state.emergency_contacts.get(emergency_contact_id).unwrap().server_share.as_slice()).map_err(|_| ())?;
-    let mut shares = vec![client_share, server_share];
+    let shares = vec![client_share, server_share];
     let sharks = Sharks(2);
     Ok(sharks.recover(shares.as_slice()).unwrap_or_default())
 }
@@ -310,13 +299,11 @@ async fn recover_password(
     let client_share = Share::try_from(client_share.as_slice()).map_err(|_| ())?;
     let padding_characters_count = cryptography::decrypt(&data_encryption_key, row.get(1)).map_err(|_| ())?;
     let buffer = Vec::new();
-    let server_share_response = state.http_client.get(format!("https://localhost:3000/secrets/{}/share", secret_id))
-        .body(buffer)
-        .send()
+    let server_share_response = state.api_client.get_with_body(&format!("/secrets/{}/share", secret_id), buffer)
         .await
         .map_err(|_| ())?;
     if server_share_response.status() != 200 {
-        return Err(());
+        Err(())
     } else {
         let server_share_response = server_share_response.bytes().await.map_err(|_| ())?;
         let server_share_response: SecretShare = ciborium::de::from_reader(server_share_response.as_ref()).map_err(|_| ())?;
@@ -335,10 +322,10 @@ pub(crate) async fn filter_by_search_term(state: State<'_, Mutex<S2SecretData>>,
     let state = state.lock().await;
     let filtered_passwords: Vec<Password> = state.passwords.values()
         .cloned()
-        .filter(|password| (password.title.contains(&term) ||
+        .filter(|password| password.title.contains(&term) ||
                                            password.user_name.as_ref().is_some_and(|u| u.contains(&term)) ||
                                            password.site.as_ref().is_some_and(|s| s.contains(&term)) ||
-                                           password.notes.as_ref().is_some_and(|n| n.contains(&term))))
+                                           password.notes.as_ref().is_some_and(|n| n.contains(&term)))
         .collect();
     Ok(filtered_passwords)
 }
@@ -384,13 +371,11 @@ async fn share_renewal_for_secret(
         updated_at: NaiveDateTime::from_timestamp(row.get(2), 0),
     };
     ciborium::ser::into_writer(&client_share_renewal_request,&mut buffer).map_err(|_| ())?;
-    let server_share_renewal_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/renew-share", &secret_id))
-        .body(buffer)
-        .send()
+    let server_share_renewal_response = state.api_client.post(&format!("/secrets/{}/renew-share", &secret_id), buffer)
         .await
         .map_err(|_| ())?;
     if server_share_renewal_response.status() != 200 {
-        return Err(());
+        Err(())
     } else {
         let response_bytes = server_share_renewal_response.bytes().await.map_err(|_| ())?;
         let server_share_renewal_response: ShareRenewal = ciborium::de::from_reader(response_bytes.as_ref()).map_err(|_| ())?;
@@ -407,20 +392,17 @@ pub(crate) async fn send_2fa_secret_code(state: State<'_, Mutex<S2SecretData>>, 
     let mut buffer = Vec::new();
     let one_time_secret_code_request = OneTimeSecretCodeRequest { secret_code: one_time_secret_code };
     ciborium::ser::into_writer(&one_time_secret_code_request, &mut buffer).map_err(|_| ())?;
-    let two_factor_response = state.http_client.post("https://localhost:3000/auth/user/2fa")
-        .body(buffer)
-        .header("session-id", &temporal_session_id)
-        .send()
+    let two_factor_response = state.api_client.post_with_headers("/auth/user/2fa", buffer, &temporal_session_id)
         .await
         .map_err(|_| ())?;
     if two_factor_response.status() != 200 {
         return Err(());
     }
     let session_id = two_factor_response.headers().get("session-id").unwrap().clone();
-    state.session_id = Some(uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap());
-    state.http_client = ClientBuilder::new(https_client())
+    state.session_id = Some(Uuid::parse_str(session_id.to_str().unwrap()).unwrap());
+    state.api_client.client = ClientBuilder::new(https_client())
     .with(SecureSessionMiddleware {
-        session_id: uuid::Uuid::parse_str(session_id.to_str().unwrap()).unwrap(),
+        session_id: Uuid::parse_str(session_id.to_str().unwrap()).unwrap(),
         session_key: SecretBox::new(Box::new(state.session_key.expose_secret().as_ref().unwrap().clone()))
     })
     .build();
@@ -444,7 +426,7 @@ async fn share_renewal_for_emergency_access_secret(state: &S2SecretData,secret_i
         .fetch_one(&mut *transaction)
         .await
         .map_err(|_| ())?;
-    Ok("Renew successfull".to_string())
+    Ok("Renew successful".to_string())
 }
 
 #[tauri::command]
@@ -453,14 +435,11 @@ pub(crate) async fn send_2fa_emergency_access_secret_code(state: State<'_, Mutex
     let mut buffer = Vec::new();
     let one_time_secret_code_request = OneTimeSecretCodeRequest { secret_code: one_time_secret_code };
     ciborium::ser::into_writer(&one_time_secret_code_request, &mut buffer).map_err(|_| ())?;
-    let emergency_access_response = state.http_client.post(format!("https://localhost:3000/auth/emergency-contacts/{}/secrets/{}/2fa",emergency_contact_id, secret_id))
-        .body(buffer)
-        .header("session-id", &temporal_session_id)
-        .send()
+    let emergency_access_response = state.api_client.post_with_headers(&format!("/auth/emergency-contacts/{}/secrets/{}/2fa",emergency_contact_id, secret_id), buffer, &temporal_session_id)
         .await
         .map_err(|_| ())?;
     if emergency_access_response.status() != 200 {
-        return Err(());
+        Err(())
     } else {
         let emergency_access_response_bytes = emergency_access_response.bytes().await.map_err(|_| ())?;
         let recovered_secret: EmergencyContactSecretAccessResponse = ciborium::de::from_reader(emergency_access_response_bytes.as_ref()).map_err(|_| ())?;
@@ -518,13 +497,11 @@ pub(crate) async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergen
     };
     let mut buffer = Vec::new();
     ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
-    let emergency_access_response = state.http_client.post(format!("https://localhost:3000/auth/emergency-contacts/{}/secrets/{}",emergency_access_data.id_emergency_contact, emergency_access_data.id_secret))
-        .body(buffer)
-        .send()
+    let emergency_access_response = state.api_client.post(&format!("/auth/emergency-contacts/{}/secrets/{}",emergency_access_data.id_emergency_contact, emergency_access_data.id_secret), buffer)
         .await
         .map_err(|_| ())?;
     if emergency_access_response.status() != 200 {
-        return Err(());
+        Err(())
     } else {
         Ok(EmergencyContactConfirmationData {
             emergency_contact_id: emergency_access_data.id_emergency_contact,
@@ -539,12 +516,11 @@ pub(crate) async fn recover_secret(state: State<'_, Mutex<S2SecretData>>,emergen
 #[tauri::command]
 pub(crate) async fn remove_access_to_emergency_contact_for_secret(state: State<'_, Mutex<S2SecretData>>,id_emergency_contact: Uuid ,secret_id: Uuid) -> Result<(), ()> {
     let state = state.lock().await;
-    let response = state.http_client.delete(format!("https://localhost:3000/secrets/{}/emergency-contacts/{}", secret_id, id_emergency_contact))
-        .send()
+    let response = state.api_client.delete(&format!("/secrets/{}/emergency-contacts/{}", secret_id, id_emergency_contact))
         .await
         .map_err(|_| ())?;
     if response.status() != 204 {
-        return Err(());
+        Err(())
     } else {
         let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
         sqlx::query("DELETE FROM emergency_contact_access WHERE id_emergency_contact = ? AND id_secret = ?;")
@@ -574,7 +550,7 @@ pub(crate) async fn add_access_to_emergency_contact_for_secret(state: State<'_, 
     Argon2::default().hash_password_into(password.as_ref(), &v, &mut encryption_key_for_secret).ok().unwrap();
     let encrypted_secret = cryptography::encrypt(&encryption_key_for_secret, secret.as_bytes()).map_err(|_| ())?;
     let ticket = Ticket {
-        password_hash: password_hash,
+        password_hash,
         encrypted_secret,
     };
     let sharks = Sharks(2);
@@ -585,19 +561,17 @@ pub(crate) async fn add_access_to_emergency_contact_for_secret(state: State<'_, 
     let v_shares = sharks.dealer(v.as_slice()).take(2).collect::<Vec<Share>>();
     let mut buffer = Vec::new();
     let emergency_access_request = EmergencyAccessRequest {
-        id_emergency_contact: id_emergency_contact,
+        id_emergency_contact,
         server_ticket: Vec::from(&ticket_shares[1]),
         server_v: Vec::from(&v_shares[1]),
         server_a: Vec::from(&a_shares[1]),
     };
     ciborium::ser::into_writer(&emergency_access_request,&mut buffer).map_err(|_| ())?;
-    let emergency_access_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/emergency-contacts", secret_id))
-        .body(buffer)
-        .send()
+    let emergency_access_response = state.api_client.post(&format!("/secrets/{}/emergency-contacts", secret_id), buffer)
         .await
         .map_err(|_| ())?;
     if emergency_access_response.status() != 204 {
-        return Err(());
+        Err(())
     } else {
         let encrypted_data_encryption_key = store_local_emergency_access_data(&state, &id_emergency_contact, &secret_id, &ticket_shares[0], &v_shares[0], &a_shares[0], &a, &v, &password, &send_email).await?;
         let mut buffer = Vec::new();
@@ -611,9 +585,7 @@ pub(crate) async fn add_access_to_emergency_contact_for_secret(state: State<'_, 
                 encrypted_a: Vec::from(&a)
             };
             ciborium::ser::into_writer(&emergency_access_client_data_request,&mut buffer).map_err(|_| ())?;
-            let emergency_access_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/emergency-contacts/{}/send", secret_id, id_emergency_contact))
-                .body(buffer)
-                .send()
+            let emergency_access_response = state.api_client.post(&format!("/secrets/{}/emergency-contacts/{}/send", secret_id, id_emergency_contact), buffer)
                 .await
                 .map_err(|_| ())?;
             if emergency_access_response.status() != 204 {
@@ -672,7 +644,7 @@ pub(crate) async fn copy_to_clipboard(app_handle: tauri::AppHandle,_: State<'_, 
 
 async fn store_local_emergency_contact_share(
     state: &S2SecretData,
-    emergency_contact_id: &uuid::Uuid,
+    emergency_contact_id: &Uuid,
     share: &Share,
 ) -> Result<(),()> {
     let data_encryption_key = Aes256Gcm::generate_key(OsRng);
@@ -694,7 +666,7 @@ async fn store_local_emergency_contact_share(
     Ok(())
 }
 
-async fn password_salt_of_emergency_contact(state: &S2SecretData, emergency_contact_id: &uuid::Uuid) -> Result<String, ()> {
+async fn password_salt_of_emergency_contact(state: &S2SecretData, emergency_contact_id: &Uuid) -> Result<String, ()> {
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
     let emergency_contact_row = sqlx::query("SELECT password_salt, data_encryption_key FROM emergency_contact WHERE id = ?")
         .bind(emergency_contact_id.to_string())
@@ -707,7 +679,7 @@ async fn password_salt_of_emergency_contact(state: &S2SecretData, emergency_cont
     Ok(String::from_utf8(password_salt).map_err(|_| ())?)
 }
 
-async fn data_encryption_key_for_secret(state: &S2SecretData, secret_id: &uuid::Uuid) -> Result<[u8; 32], ()> {
+async fn data_encryption_key_for_secret(state: &S2SecretData, secret_id: &Uuid) -> Result<[u8; 32], ()> {
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
     let data_encryption_key = sqlx::query("SELECT data_encryption_key FROM secret WHERE id = ?")
         .bind(secret_id.to_string())
@@ -728,27 +700,27 @@ async fn login_parameters_for_user(state: &S2SecretData) -> Result<S2SecretLogin
         .map_err(|_| ())?;
     transaction.commit().await.map_err(|_| ())?;
     Ok(S2SecretLoginParameters {
-        client_identifier: uuid::Uuid::parse_str(login_parameters.get(0)).map_err(|_| ())?,
+        client_identifier: Uuid::parse_str(login_parameters.get(0)).map_err(|_| ())?,
         client_pepper: login_parameters.get(1),
         server_static_public_key: login_parameters.get(2)
     })
 }
 
 // TODO: allow to store several users on the same database 
-async fn user_id_for_user(state: &S2SecretData) -> Result<uuid::Uuid, ()> {
+async fn user_id_for_user(state: &S2SecretData) -> Result<Uuid, ()> {
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
     let user_row = sqlx::query("SELECT id FROM user")
         .fetch_one(&mut *transaction)
         .await
         .map_err(|_| ())?;
     transaction.commit().await.map_err(|_| ())?;
-    Ok(uuid::Uuid::parse_str(user_row.get(0)).map_err(|_| ())?)
+    Ok(Uuid::parse_str(user_row.get(0)).map_err(|_| ())?)
 }
 
 async fn store_local_emergency_access_data(
     state: &S2SecretData,
-    emergency_contact_id: &uuid::Uuid,
-    secret_id: &uuid::Uuid,
+    emergency_contact_id: &Uuid,
+    secret_id: &Uuid,
     ticket_share: &Share,
     v_share: &Share,
     a_share: &Share,
@@ -781,7 +753,7 @@ async fn store_local_emergency_access_data(
 
 async fn store_local_share(
     state: &S2SecretData,
-    secret_id: &uuid::Uuid,
+    secret_id: &Uuid,
     share: &Share,
     padding_characters_count: usize,
     data_encryption_key: &[u8]
@@ -805,7 +777,7 @@ async fn store_local_share(
 
 async fn update_local_share_on_renewal(
     state: &S2SecretData,
-    secret_id: &uuid::Uuid,
+    secret_id: &Uuid,
     share: &Share,
     updated_at: NaiveDateTime,
 ) -> Result<(), ()> {
@@ -825,7 +797,7 @@ async fn update_local_share_on_renewal(
 
 async fn delete_local_share(
     state: &S2SecretData,
-    secret_id: &uuid::Uuid,
+    secret_id: &Uuid,
 ) -> Result<(), ()> {
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
     sqlx::query("DELETE FROM secret WHERE id = ?")
@@ -839,7 +811,7 @@ async fn delete_local_share(
 
 async fn delete_local_emergency_contact(
     state: &S2SecretData,
-    emergency_contact_id: &uuid::Uuid,
+    emergency_contact_id: &Uuid,
 ) -> Result<(), ()> {
     let mut transaction = SqlitePool::connect(&state.client_local_data_path).await.map_err(|_| ())?.begin().await.map_err(|_| ())?;
     sqlx::query("DELETE FROM emergency_contact_access WHERE id_emergency_contact = ?")
@@ -860,12 +832,11 @@ async fn delete_local_emergency_contact(
 pub(crate) async fn delete_secret(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -> Result<String, ()> {
     let mut state = state.lock().await;
     delete_local_share(&state, &secret_id).await.map_err(|_| ())?;
-    let delete_secret_response = state.http_client.delete(format!("https://localhost:3000/secrets/{}", &secret_id))
-        .send()
+    let delete_secret_response = state.api_client.delete(&format!("/secrets/{}", &secret_id))
         .await
         .map_err(|_| ())?;
     if delete_secret_response.status() != 204 {
-        return Err(());
+        Err(())
     } else {
         state.passwords.remove(&secret_id);
         Ok("Secret deleted successfully".to_string())
@@ -876,12 +847,11 @@ pub(crate) async fn delete_secret(state: State<'_, Mutex<S2SecretData>>, secret_
 pub(crate) async fn delete_emergency_contact(state: State<'_, Mutex<S2SecretData>>, emergency_contact_id: Uuid) -> Result<String, ()> {
     let mut state = state.lock().await;
     delete_local_emergency_contact(&state, &emergency_contact_id).await.map_err(|_| ())?;
-    let delete_emergency_contact_response = state.http_client.delete(format!("https://localhost:3000/user/emergency-contacts/{}", &emergency_contact_id))
-        .send()
+    let delete_emergency_contact_response = state.api_client.delete(&format!("/user/emergency-contacts/{}", &emergency_contact_id))
         .await
         .map_err(|_| ())?;
     if delete_emergency_contact_response.status() != 204 {
-        return Err(());
+        Err(())
     } else {
         state.emergency_contacts.remove(&emergency_contact_id);
         Ok("Emergency contact deleted successfully".to_string())
@@ -902,7 +872,7 @@ pub(crate) async fn emergency_contacts(state: State<'_, Mutex<S2SecretData>>) ->
 
 #[tauri::command]
 pub(crate) async fn renew_shares(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
-    let mut state: tokio::sync::MutexGuard<'_, S2SecretData> = state.lock().await;
+    let state: tokio::sync::MutexGuard<'_, S2SecretData> = state.lock().await;
     for (secret_id, _password) in &state.passwords {
         share_renewal_for_secret(&state, secret_id).await;
         //if let Some(next_share_update) = password.next_share_update {
@@ -917,12 +887,11 @@ pub(crate) async fn renew_shares(state: State<'_, Mutex<S2SecretData>>) -> Resul
 #[tauri::command]
 pub(crate) async fn load_secret_descriptive_data(state: State<'_, Mutex<S2SecretData>>, secret_id: Uuid) -> Result<String, ()> {
     let mut state = state.lock().await;
-    let secret_response = state.http_client.get(format!("https://localhost:3000/secrets/{}", secret_id))
-        .send()
+    let secret_response = state.api_client.get(&format!("/secrets/{}", secret_id))
         .await
         .map_err(|_| ())?;
     if secret_response.status() != 200 {
-        return Err(());
+        Err(())
     }
     else {
         let secret_response_bytes = secret_response.bytes().await.map_err(|_| ())?;
@@ -971,12 +940,11 @@ async fn secret_descriptive_data(state: &S2SecretData, secret: &Secret) -> Resul
 #[tauri::command]
 pub(crate) async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
-    let secrets_response = state.http_client.get(format!("https://localhost:3000/secrets"))
-        .send()
+    let secrets_response = state.api_client.get(&"/secrets".to_string())
         .await
         .map_err(|_| ())?;
     if secrets_response.status() != 200 {
-        return Err(());
+        Err(())
     }
     else {
         let secrets_response_bytes = secrets_response.bytes().await.map_err(|_| ())?;
@@ -992,12 +960,11 @@ pub(crate) async fn load_secrets_descriptive_data(state: State<'_, Mutex<S2Secre
 #[tauri::command]
 pub(crate) async fn load_emergency_contacts(state: State<'_, Mutex<S2SecretData>>) -> Result<String, ()> {
     let mut state = state.lock().await;
-    let emergency_contacts_response = state.http_client.get(format!("https://localhost:3000/user/emergency-contacts"))
-        .send()
+    let emergency_contacts_response = state.api_client.get(&"/user/emergency-contacts".to_string())
         .await
         .map_err(|_| ())?;
     if emergency_contacts_response.status() != 200 {
-        return Err(());
+        Err(())
     } else {
         let emergency_contacts_response_bytes = emergency_contacts_response.bytes().await.map_err(|_| ())?;
         let emergency_contacts: Vec<EmergencyContact> = ciborium::de::from_reader(emergency_contacts_response_bytes.as_ref()).map_err(|_| ())?;
@@ -1021,8 +988,8 @@ pub(crate) async fn get_emergency_accesses_for_all_secrets(state: State<'_, Mute
     let mut emergency_contact_accesses = Vec::new();
     for row in emergency_contact_access_rows {
         let emergency_contact_access = EmergencyContactAccessInfo {
-            id_emergency_contact: uuid::Uuid::parse_str(row.get(0)).map_err(|_| ())?,
-            id_secret: uuid::Uuid::parse_str(row.get(1)).map_err(|_| ())?,
+            id_emergency_contact: Uuid::parse_str(row.get(0)).map_err(|_| ())?,
+            id_secret: Uuid::parse_str(row.get(1)).map_err(|_| ())?,
         };
         emergency_contact_accesses.push(emergency_contact_access);
     }
@@ -1073,9 +1040,7 @@ pub(crate) async fn add_secret(state: State<'_, Mutex<S2SecretData>>, title: Str
         notes,
     ).await?;
     ciborium::ser::into_writer(&new_secret_request,&mut buffer).map_err(|_| ())?;
-    let add_secret_response = state.http_client.post("https://localhost:3000/secrets")
-        .body(buffer)
-        .send()
+    let add_secret_response = state.api_client.post("/secrets", buffer)
         .await
         .map_err(|_| ())?;
     if add_secret_response.status() != 201 {
@@ -1124,12 +1089,11 @@ pub(crate) async fn disable_proactive_protection(
     secret_id: Uuid,
 ) -> Result<(), ()> {
     let mut state = state.lock().await;
-    let protection_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/disable-proactive-protection", secret_id))
-        .send()
+    let protection_response = state.api_client.post_empty(&format!("/secrets/{}/disable-proactive-protection", secret_id))
         .await
         .map_err(|_| ())?;
     if protection_response.status() != 200 {
-        return Err(());
+        Err(())
     } else {
         let update_secret_response_bytes = protection_response.bytes().await.map_err(|_| ())?;
         let updated_secret: Secret = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
@@ -1155,13 +1119,11 @@ pub(crate) async fn add_emergency_contact(
         description,
         server_share: Vec::from(&password_shares[1])
     }, &mut buffer).map_err(|_| ())?;
-    let contact_response = state.http_client.post("https://localhost:3000/user/emergency-contacts")
-        .body(buffer)
-        .send()
+    let contact_response = state.api_client.post("/user/emergency-contacts", buffer)
         .await
         .map_err(|_| ())?;
     if contact_response.status() != 201 {
-        return Err(());
+        Err(())
     } else {
         let add_emergency_contact_response_bytes = contact_response.bytes().await.map_err(|_| ())?;
         let added_emergency_contact: EmergencyContact = ciborium::de::from_reader(add_emergency_contact_response_bytes.as_ref()).map_err(|_| ())?;
@@ -1186,13 +1148,11 @@ pub(crate) async fn enable_proactive_protection(
     let mut state = state.lock().await;
     let mut buffer = Vec::new();
     ciborium::ser::into_writer(&proactive_protection,&mut buffer).map_err(|_| ())?;
-    let protection_response = state.http_client.post(format!("https://localhost:3000/secrets/{}/enable-proactive-protection", secret_id))
-        .body(buffer)
-        .send()
+    let protection_response = state.api_client.post(&format!("/secrets/{}/enable-proactive-protection", secret_id), buffer)
         .await
         .map_err(|_| ())?;
     if protection_response.status() != 200 {
-        return Err(());
+        Err(())
     } else {
         let update_secret_response_bytes = protection_response.bytes().await.map_err(|_| ())?;
         let updated_secret: Secret = ciborium::de::from_reader(update_secret_response_bytes.as_ref()).map_err(|_| ())?;
@@ -1218,9 +1178,7 @@ pub(crate) async fn update_secret(state: State<'_, Mutex<S2SecretData>>, id: Uui
         notes,
     ).await?;
     ciborium::ser::into_writer(&secret_update_request,&mut buffer).map_err(|_| ())?;
-    let update_secret_response = state.http_client.put(format!("https://localhost:3000/secrets/{}", id))
-        .body(buffer)
-        .send()
+    let update_secret_response = state.api_client.put(&format!("/secrets/{}", id), buffer)
         .await
         .map_err(|_| ())?;
     if update_secret_response.status() != 200 {

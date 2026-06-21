@@ -5,6 +5,7 @@ mod commands;
 mod cryptography;
 mod s2secret;
 mod http_client;
+mod api_client;
 
 use crate::s2secret::S2SecretData;
 
@@ -21,7 +22,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
-            commands::login, 
+            commands::login,
             commands::register_user,
             commands::is_authenticated,
             commands::logout, 

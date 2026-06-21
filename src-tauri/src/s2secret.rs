@@ -5,7 +5,7 @@ use bincode::{Decode, Encode};
 use secrecy::SecretBox;
 use std::collections::HashMap;
 use opaque_ke::{CredentialFinalization, CredentialRequest, RegistrationRequest, RegistrationUpload};
-use crate::{cryptography::DefaultCipherSuite, http_client::https_client};
+use crate::{cryptography::DefaultCipherSuite, http_client::https_client, api_client::ApiClient};
 
 
 #[derive(Deserialize, Serialize)]
@@ -65,15 +65,14 @@ pub(crate) enum ProactiveProtection {
     Extreme
 }
 
-#[derive(Default)]
 pub(crate) struct S2SecretData {
     pub user_id: Option<Uuid>,
     pub user_name: Option<String>,
     pub user_email: Option<String>,
-    pub session_id: Option<uuid::Uuid>,
+    pub session_id: Option<Uuid>,
     pub session_key: SecretBox<Option<Vec<u8>>>,
     pub password_encryption_key: SecretBox<Option<Vec<u8>>>,
-    pub http_client: reqwest_middleware::ClientWithMiddleware,
+    pub api_client: ApiClient,
     pub client_local_data_path: String,
     pub passwords: HashMap<Uuid, Password>,
     pub emergency_contacts: HashMap<Uuid, EmergencyContact>,
@@ -81,14 +80,18 @@ pub(crate) struct S2SecretData {
 
 impl S2SecretData {
     pub fn new() -> Self {
-         S2SecretData {
+        // Load the base URL from environment or use fallback
+        let base_url = std::env::var("S2SECRET_API_URL").unwrap_or_else(|_| "https://localhost:3000".to_string());
+        let http_client = reqwest_middleware::ClientWithMiddleware::new(https_client(), vec![]);
+
+        S2SecretData {
             user_id: None,
             user_name: None,
             user_email: None,
             session_id: None,
             session_key: SecretBox::default(),
             password_encryption_key: SecretBox::default(),
-            http_client: reqwest_middleware::ClientWithMiddleware::new(https_client(), vec![]),
+            api_client: ApiClient::new(base_url, http_client),
             client_local_data_path: String::default(),
             passwords: HashMap::default(),
             emergency_contacts: HashMap::default(),
@@ -98,7 +101,7 @@ impl S2SecretData {
 
 #[derive(Serialize,Deserialize)]
 pub(crate) struct LoginInitialRequest {
-    pub client_identifier: uuid::Uuid,
+    pub client_identifier: Uuid,
     pub email: String,
     pub message: CredentialRequest<DefaultCipherSuite>,
 }
@@ -117,7 +120,7 @@ pub(crate) struct UserDataResponse {
 }
 #[derive(Serialize,Deserialize)]
 pub(crate) struct UpsertSecretResponse {
-    pub id_secret: uuid::Uuid,
+    pub id_secret: Uuid,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -253,6 +256,6 @@ pub(crate) struct UserRegistrationFinishResult {
 #[derive(Serialize,Deserialize)]
 pub(crate) struct S2SecretLoginParameters {
     pub client_pepper: Vec<u8>,
-    pub client_identifier: uuid::Uuid,
+    pub client_identifier: Uuid,
     pub server_static_public_key: Vec<u8>
 }
